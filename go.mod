@@ -3,6 +3,7 @@ module github.com/33cn/chain33
 go 1.12
 
 require (
+	github.com/AndreasBriese/bbloom v0.0.0-20190306092124-e2d15f34fcf9 // indirect
 	github.com/BurntSushi/toml v0.3.1
 	github.com/NebulousLabs/Sia v1.3.7
 	github.com/NebulousLabs/entropy-mnemonics v0.0.0-20170316012907-7b01a644a636 // indirect
@@ -16,7 +17,7 @@ require (
 	github.com/coreos/bbolt v1.3.0 // indirect
 	github.com/dchest/blake256 v1.0.0 // indirect
 	github.com/decred/base58 v1.0.0
-	github.com/dgraph-io/badger v1.6.0-rc1
+	github.com/dgraph-io/badger v1.5.4
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
 	github.com/fortytw2/leaktest v1.3.0 // indirect
 	github.com/go-stack/stack v1.8.0
@@ -24,19 +25,41 @@ require (
 	github.com/haltingstate/secp256k1-go v0.0.0-20151224084235-572209b26df6
 	github.com/hashicorp/golang-lru v0.5.3
 	github.com/huin/goupnp v1.0.0
+	github.com/ipfs/go-datastore v0.1.0 // indirect
+	github.com/ipfs/go-detect-race v0.0.1 // indirect
+	github.com/ipfs/go-ds-badger v0.0.4 // indirect
+	github.com/ipfs/go-ds-leveldb v0.0.1 // indirect
 	github.com/ipfs/go-log v0.0.1
+	github.com/ipfs/go-todocounter v0.0.1 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.1
-	github.com/libp2p/go-libp2p v0.3.1
+	github.com/libp2p/go-addr-util v0.0.1 // indirect
+	github.com/libp2p/go-conn-security-multistream v0.1.0 // indirect
+	github.com/libp2p/go-eventbus v0.1.0 // indirect
+	github.com/libp2p/go-libp2p v0.0.0-20190227195236-c4577c770392
+	github.com/libp2p/go-libp2p-blankhost v0.1.3 // indirect
 	github.com/libp2p/go-libp2p-core v0.2.3
-	github.com/libp2p/go-libp2p-discovery v0.1.0
 	github.com/libp2p/go-libp2p-host v0.1.0
-	github.com/libp2p/go-libp2p-kad-dht v0.2.1
+	github.com/libp2p/go-libp2p-kad-dht v0.0.2
+	github.com/libp2p/go-libp2p-loggables v0.1.0 // indirect
+	github.com/libp2p/go-libp2p-nat v0.0.4 // indirect
 	github.com/libp2p/go-libp2p-net v0.1.0
+	github.com/libp2p/go-libp2p-netutil v0.1.0 // indirect
 	github.com/libp2p/go-libp2p-peer v0.2.0
+	github.com/libp2p/go-libp2p-record v0.1.1 // indirect
+	github.com/libp2p/go-libp2p-routing v0.1.0 // indirect
+	github.com/libp2p/go-libp2p-secio v0.2.0 // indirect
+	github.com/libp2p/go-libp2p-testing v0.1.0 // indirect
+	github.com/libp2p/go-libp2p-yamux v0.2.1 // indirect
+	github.com/libp2p/go-maddr-filter v0.0.5 // indirect
+	github.com/libp2p/go-stream-muxer-multistream v0.2.0 // indirect
+	github.com/libp2p/go-tcp-transport v0.1.0 // indirect
+	github.com/libp2p/go-ws-transport v0.1.0 // indirect
 
 	github.com/mattn/go-colorable v0.1.1
+	github.com/miekg/dns v1.1.12 // indirect
 	github.com/mr-tron/base58 v1.1.2
 	github.com/multiformats/go-multiaddr v0.1.1
+	github.com/multiformats/go-multiaddr-dns v0.0.3 // indirect
 	github.com/pkg/errors v0.8.1
 	github.com/rs/cors v1.6.0
 	github.com/spf13/cobra v0.0.5
@@ -44,6 +67,7 @@ require (
 	github.com/syndtr/goleveldb v1.0.0
 	github.com/tjfoc/gmsm v0.0.0-20171124023159-98aa888b79d8
 	github.com/vektra/mockery v0.0.0-20181123154057-e78b021dcbb5 // indirect
+	github.com/whyrusleeping/mdns v0.0.0-20180901202407-ef14215e6b30 // indirect
 	golang.org/x/crypto v0.0.0-20190923035154-9ee001bba392
 	golang.org/x/net v0.0.0-20190813141303-74dc4d7220e7
 	golang.org/x/sys v0.0.0-20190922100055-0a153f010e69
