@@ -138,8 +138,9 @@ Retry:
 		PermitWithoutStream: true,
 	}
 	var keepparm keepalive.ServerParameters
-	keepparm.Time = 5 * time.Minute
-	keepparm.Timeout = 50 * time.Second
+	// 客户端失活时, 服务端主动发送ping周期
+	keepparm.Time = 15 * time.Second
+	keepparm.Timeout = 10 * time.Second
 	maxStreams := grpc.MaxConcurrentStreams(1000)
 	keepOp := grpc.KeepaliveParams(keepparm)
 	StatsOp := grpc.StatsHandler(&statshandler{})
