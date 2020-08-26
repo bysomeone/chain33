@@ -206,11 +206,6 @@ func (c *Chain33Config) chain33CfgInit(cfg *Config) {
 	c.forks.SetTestNetFork()
 
 	if cfg != nil {
-		if c.isLocal() {
-			c.setTestNet(true)
-		} else {
-			c.setTestNet(cfg.TestNet)
-		}
 
 		if cfg.Wallet.MinFee < cfg.Mempool.MinTxFeeRate {
 			panic("config must meet: wallet.minFee >= mempool.minTxFeeRate")
@@ -225,7 +220,6 @@ func (c *Chain33Config) chain33CfgInit(cfg *Config) {
 		if cfg.Consensus != nil {
 			c.setMinerExecs(cfg.Consensus.MinerExecs)
 		}
-		c.setChainConfig("FixTime", cfg.FixTime)
 		if cfg.CoinSymbol != "" {
 			if strings.Contains(cfg.CoinSymbol, "-") {
 				panic("config CoinSymbol must without '-'")
@@ -238,7 +232,9 @@ func (c *Chain33Config) chain33CfgInit(cfg *Config) {
 				c.coinSymbol = DefaultCoinsSymbol
 			}
 		}
-		//TxHeight
+		//set global config
+		c.setChainConfig("TestNet", c.isLocal() || cfg.TestNet)  //set TestNet=true if local
+		c.setChainConfig("FixTime", cfg.FixTime)
 		c.setChainConfig("TxHeight", cfg.TxHeight)
 	}
 	if c.needSetForkZero() { //local 只用于单元测试
@@ -269,15 +265,6 @@ func (c *Chain33Config) needSetForkZero() bool {
 		return true
 	}
 	return false
-}
-
-func (c *Chain33Config) setTestNet(isTestNet bool) {
-	if !isTestNet {
-		c.setChainConfig("TestNet", false)
-		return
-	}
-	c.setChainConfig("TestNet", true)
-	//const 初始化TestNet 的初始化参数
 }
 
 // GetP 获取ChainParam

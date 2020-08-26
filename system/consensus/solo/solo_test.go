@@ -90,6 +90,7 @@ func BenchmarkSendTx(b *testing.B) {
 	}
 	cfg := testnode.GetDefaultConfig()
 	subcfg := cfg.GetSubConfig()
+	cfg.S("TxHeight", true)
 	cfg.GetModuleConfig().Exec.DisableAddrIndex = true
 	solocfg, err := types.ModifySubConfig(subcfg.Consensus["solo"], "waitTxMs", 100)
 	assert.Nil(b, err)
@@ -147,6 +148,7 @@ func BenchmarkSoloNewBlock(b *testing.B) {
 	cfg := testnode.GetDefaultConfig()
 	cfg.GetModuleConfig().Exec.DisableAddrIndex = true
 	cfg.GetModuleConfig().Mempool.DisableExecCheck = true
+	cfg.S("TxHeight", true)
 	subcfg := cfg.GetSubConfig()
 	solocfg, err := types.ModifySubConfig(subcfg.Consensus["solo"], "waitTxMs", 100)
 	assert.Nil(b, err)
