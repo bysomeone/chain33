@@ -180,7 +180,9 @@ func CheckTxDup(client queue.Client, txs []*types.TransactionCache, height int64
 	dupMap := make(map[string]bool)
 	for _, hash := range dupTxs {
 		dupMap[string(hash)] = true
-		log.Error("CheckTxDup", "TxDuphash", common.ToHex(hash))
+	}
+	if len(dupTxs) > 0 {
+		log.Error("CheckTxDup", "txCount", len(txs), "dupCount", len(dupTxs))
 	}
 	for _, tx := range txs {
 		hash := tx.Hash()

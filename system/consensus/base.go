@@ -415,13 +415,13 @@ func (bc *BaseClient) WriteBlock(prev []byte, block *types.Block) error {
 	}
 	blockdetail = resp.GetData().(*types.BlockDetail)
 	//从mempool 中删除错误的交易
-	deltx := diffTx(rawtxs, blockdetail.Block.Txs)
-	if len(deltx) > 0 {
-		err := bc.delMempoolTx(deltx)
-		if err != nil {
-			return err
-		}
-	}
+	//deltx := diffTx(rawtxs, blockdetail.Block.Txs)
+	//if len(deltx) > 0 {
+	//	err := bc.delMempoolTx(deltx)
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
 	if blockdetail != nil {
 		bc.SetCurrentBlock(blockdetail.Block)
 	} else {

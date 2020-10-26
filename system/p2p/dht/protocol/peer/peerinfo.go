@@ -222,16 +222,22 @@ func (p *peerInfoProtol) detectNodeAddr() {
 	}()
 	//通常libp2p监听的地址列表，第一个为局域网地址，最后一个为外部，先进行外部地址预设置
 	addrs := p.GetHost().Addrs()
-	preExternalAddr := strings.Split(addrs[len(addrs)-1].String(), "/")[2]
-	p.mutex.Lock()
-	p.externalAddr = preExternalAddr
-	p.mutex.Unlock()
-
-	netIP := net.ParseIP(preExternalAddr)
-	if isPublicIP(netIP) { //检测是PubIp不用继续通过其他节点获取
-		log.Debug("detectNodeAddr", "testPubIp", preExternalAddr)
+	var externAddr string
+	for _,addr := range addrs {
+		externAddr = strings.Split(addr.String(), "/")[2]
+		if  externAddr != "127.0.0.1" {
+			p.mutex.Lock()
+			p.externalAddr = externAddr
+			p.mutex.Unlock()
+			break
+		}
 	}
-	log.Info("detectNodeAddr", "+++++++++++++++", preExternalAddr, "addrs", addrs)
+
+	netIP := net.ParseIP(externAddr)
+	if isPublicIP(netIP) { //检测是PubIp不用继续通过其他节点获取
+		log.Debug("detectNodeAddr", "testPubIp", externAddr)
+	}
+	log.Info("detectNodeAddr", "+++++++++++++++", externAddr, "addrs", addrs)
 	localID := p.GetHost().ID()
 	var rangeCount int
 	queryInterval := time.Minute

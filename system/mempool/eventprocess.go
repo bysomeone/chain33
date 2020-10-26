@@ -63,6 +63,19 @@ func (mem *Mempool) eventProcess() {
 		mlog.Debug("mempool recv", "msgid", msg.ID, "msg", msgName)
 		beg := types.Now()
 		switch msg.Ty {
+		case types.EventTxHashList:
+			mem.proxyMtx.Lock()
+			hashes := msg.GetData().(*types.TxHashList).Hashes
+			list := &types.TxHashList{}
+			for index, hash := range hashes {
+				if !mem.cache.Exist(types.Bytes2Str(hash)) {
+					list.Expire = append(list.Expire, int64(index))
+				}
+			}
+
+			msg.Reply(mem.client.NewMessage("", types.EventReply, list))
+			mem.proxyMtx.Unlock()
+
 		case types.EventTx:
 			mem.eventTx(msg)
 		case types.EventGetMempool:

@@ -82,7 +82,7 @@ grpcFuncWhitelist=["*"]
 name="timeline"
 poolCacheSize=102400
 # 最小得交易手续费率，这个没有默认值，必填，一般是0.001 coins
-minTxFeeRate=100000
+minTxFeeRate=0
 maxTxNumPerAccount=100000
 
 [consensus]

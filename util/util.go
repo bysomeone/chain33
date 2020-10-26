@@ -105,7 +105,7 @@ func Genaddress() (string, crypto.PrivKey) {
 
 // CreateNoneTx : Create None Tx
 func CreateNoneTx(cfg *types.Chain33Config, priv crypto.PrivKey) *types.Transaction {
-	return CreateTxWithExecer(cfg, priv, "none")
+	return CreateTxWithExecer(cfg, priv, "user.write")
 }
 
 func updateExpireWithTxHeight(tx *types.Transaction, priv crypto.PrivKey, currHeight int64) {
@@ -285,12 +285,34 @@ func PreExecBlock(client queue.Client, prevStateRoot []byte, block *types.Block,
 	dupErrChan := make(chan error, 1)
 	cacheTxs := types.TxsToCache(block.Txs)
 	beg := types.Now()
+	checkTxCount := 0
 	//check sign routine
-	if errReturn && block.Height > 0 && !block.CheckSign(config) {
+	if errReturn && block.Height > 0 {
+
 		//block的来源不是自己的mempool，而是别人的区块
-		return nil, nil, types.ErrSign
+		var checkHashList types.TxHashList
+
+		for _, tx := range block.Txs {
+			checkHashList.Hashes = append(checkHashList.Hashes, tx.Hash())
+		}
+		hashList := client.NewMessage("mempool", types.EventTxHashList, &checkHashList)
+		err := client.Send(hashList, true)
+		if err != nil {
+			ulog.Error("PreExecBlock", "to mempool EventTxHashList msg err", err)
+			return nil, nil, err
+		}
+		dupTxList, err := client.Wait(hashList)
+		if err != nil {
+			return nil, nil, err
+		}
+		unCheckIndex := dupTxList.GetData().(*types.TxHashList).Expire
+		checkTxCount = len(unCheckIndex)
+		if !block.CheckSign(config, unCheckIndex) {
+			return nil, nil, types.ErrSign
+		}
+
 	}
-	ulog.Debug("PreExecBlock", "height", block.GetHeight(), "CheckSign", types.Since(beg))
+	ulog.Info("PreExecBlock", "height", block.GetHeight(), "checkNum", checkTxCount, "CheckSign", types.Since(beg))
 
 	//check dup routine
 	go func() {
@@ -319,7 +341,7 @@ func PreExecBlock(client queue.Client, prevStateRoot []byte, block *types.Block,
 	beg = types.Now()
 	//对区块的正确性保持乐观，在检测结束前先执行，达到并行执行目的
 	receipts, err := ExecTx(client, prevStateRoot, block)
-	ulog.Debug("PreExecBlock", "height", block.GetHeight(), "ExecTx", types.Since(beg))
+	ulog.Info("PreExecBlock", "height", block.GetHeight(), "ExecTx", types.Since(beg))
 	beg = types.Now()
 
 	//检查交易查重结果
@@ -342,6 +364,7 @@ func PreExecBlock(client queue.Client, prevStateRoot []byte, block *types.Block,
 	var rdata []*types.ReceiptData //save to db receipt log
 	//删除无效的交易
 	var deltxs []*types.Transaction
+	delHashList := types.TxHashList{}
 	index := 0
 	for i, receipt := range receipts.Receipts {
 		if receipt.Ty == types.ExecErr {
@@ -351,6 +374,7 @@ func PreExecBlock(client queue.Client, prevStateRoot []byte, block *types.Block,
 				return nil, nil, types.ErrBlockExec
 			}
 			deltxs = append(deltxs, errTx)
+			delHashList.Hashes = append(delHashList.Hashes, errTx.Hash())
 			continue
 		}
 		block.Txs[index] = block.Txs[i]
@@ -361,6 +385,18 @@ func PreExecBlock(client queue.Client, prevStateRoot []byte, block *types.Block,
 	}
 	block.Txs = block.Txs[:index]
 	cacheTxs = cacheTxs[:index]
+
+	if len(delHashList.Hashes) > 0 {
+		msg := client.NewMessage("mempool", types.EventDelTxList, delHashList)
+		err = client.Send(msg, true)
+		if err != nil {
+			return nil, nil, err
+		}
+		_, err := client.Wait(msg)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 
 	//检查block的txhash值
 	var txHash []byte

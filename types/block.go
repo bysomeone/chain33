@@ -92,7 +92,7 @@ func (block *Block) getHeaderHashNew() *Header {
 }
 
 // CheckSign 检测block的签名
-func (block *Block) CheckSign(cfg *Chain33Config) bool {
+func (block *Block) CheckSign(cfg *Chain33Config, uncheckIndex []int64) bool {
 	//检查区块的签名
 	if block.Signature != nil {
 		hash := block.Hash(cfg)
@@ -101,21 +101,29 @@ func (block *Block) CheckSign(cfg *Chain33Config) bool {
 			return false
 		}
 	}
+
+
+
+
 	//检查交易的签名
 	cpu := runtime.NumCPU()
-	ok := checkAll(block.Txs, cpu)
+	if len(uncheckIndex) == 0 {
+		return true
+	}
+	ok := checkAll(block.Txs, uncheckIndex, cpu)
 	return ok
 }
 
-func gen(done <-chan struct{}, task []*Transaction) <-chan *Transaction {
+func gen(done <-chan struct{}, uncheckIndex []int64, task []*Transaction) <-chan *Transaction {
 	ch := make(chan *Transaction)
 	go func() {
 		defer func() {
 			close(ch)
 		}()
-		for i := 0; i < len(task); i++ {
+		for i := 0; i < len(uncheckIndex); i++ {
+			index := int(uncheckIndex[i])
 			select {
-			case ch <- task[i]:
+			case ch <- task[index]:
 			case <-done:
 				return
 			}
@@ -142,11 +150,11 @@ func checksign(done <-chan struct{}, taskes <-chan *Transaction, c chan<- result
 	}
 }
 
-func checkAll(task []*Transaction, n int) bool {
+func checkAll(task []*Transaction, uncheckIndex []int64, n int) bool {
 	done := make(chan struct{})
 	defer close(done)
 
-	taskes := gen(done, task)
+	taskes := gen(done, uncheckIndex, task)
 
 	// Start a fixed number of goroutines to read and digest files.
 	c := make(chan result) // HLc
