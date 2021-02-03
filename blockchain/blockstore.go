@@ -878,6 +878,11 @@ func LoadBlockStoreHeight(db dbm.DB) (int64, error) {
 
 // 将收到的block都暂时存储到db中，加入主链之后会重新覆盖。主要是用于chain重组时获取侧链的block使用
 func (bs *BlockStore) dbMaybeStoreBlock(blockdetail *types.BlockDetail, sync bool) error {
+	beg := types.Now()
+	var batchCost time.Duration
+	defer func() {
+		chainlog.Info("maybeStoreBlock", "height", blockdetail.Block.GetHeight(), "batchWrite",batchCost, "totalCost", types.Since(beg))
+	}()
 	if blockdetail == nil {
 		return types.ErrInvalidParam
 	}
@@ -915,8 +920,9 @@ func (bs *BlockStore) dbMaybeStoreBlock(blockdetail *types.BlockDetail, sync boo
 		chainlog.Error("dbMaybeStoreBlock SaveTdByBlockHash:", "height", height, "hash", common.ToHex(hash), "err", err)
 		return err
 	}
-
+	beg1 := types.Now()
 	err = storeBatch.Write()
+	batchCost = types.Since(beg1)
 	if err != nil {
 		chainlog.Error("dbMaybeStoreBlock storeBatch.Write:", "err", err)
 		panic(err)
