@@ -150,7 +150,7 @@ func (mem *Mempool) filterTxList(count int64, dupMap map[string]bool, isAll bool
 		}
 		return true
 	})
-	mlog.Info("filterTxList", "totalTxs", mem.cache.Size(), "expiredTxs", len(expiredTxHashes),
+	mlog.Info("filterTxList", "height", height-1, "totalTxs", mem.cache.Size(), "expiredTxs", len(expiredTxHashes),
 		"reqCount", count, "replyCount", len(txs))
 	//直接触发mempool对过期交易清理
 	mem.removeTxs(expiredTxHashes)
