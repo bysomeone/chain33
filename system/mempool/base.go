@@ -150,8 +150,8 @@ func (mem *Mempool) filterTxList(count int64, dupMap map[string]bool, isAll bool
 		}
 		return true
 	})
-	mlog.Info("filterTxList", "height", height, "totalTxs", mem.cache.Size(), "expired", expireCount,
-		"req", count, "reply", len(txs))
+	//mlog.Info("filterTxList", "height", height, "totalTxs", mem.cache.Size(), "expired", expireCount,
+	//	"req", count, "reply", len(txs))
 	return txs
 }
 
