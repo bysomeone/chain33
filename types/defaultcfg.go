@@ -106,7 +106,7 @@ powLimitBits = "0x1f00ffff"
 maxTxNumber = 10000
 
 [mver.consensus.ForkChainParamV1]
-maxTxNumber = 10000
+maxTxNumber = 30000
 
 [mver.consensus.ForkChainParamV2]
 powLimitBits = "0x1f2fffff"
