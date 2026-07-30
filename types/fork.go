@@ -5,8 +5,9 @@
 package types
 
 import (
-	"github.com/33cn/chain33/common/address"
 	"strings"
+
+	"github.com/33cn/chain33/common/address"
 )
 
 /*
@@ -145,6 +146,8 @@ func (f *Forks) RegisterSystemFork() {
 	f.setFork("ForkCheckEthTxSort", 0)
 	f.setFork("ForkProxyExec", 0)
 	f.setFork("ForkMaxTxFeeV1", 0)
+	f.setFork("ForkParaFee", -1)
+	f.SetFork(ForkAccountBlacklist, MaxHeight)
 
 }
 
