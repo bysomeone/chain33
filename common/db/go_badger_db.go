@@ -22,7 +22,7 @@ type GoBadgerDB struct {
 }
 
 func init() {
-	dbCreator := func(name string, dir string, cache int) (DB, error) {
+	dbCreator := func(name string, dir string, cache int, writeBuffer int) (DB, error) {
 		return NewGoBadgerDB(name, dir, cache)
 	}
 	registerDBCreator(goBadgerDBBackendStr, dbCreator, false)

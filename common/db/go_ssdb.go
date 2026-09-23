@@ -22,7 +22,7 @@ var dlog = log.New("module", "db.ssdb")
 var sdbBench = &SsdbBench{}
 
 func init() {
-	dbCreator := func(name string, dir string, cache int) (DB, error) {
+	dbCreator := func(name string, dir string, cache int, writeBuffer int) (DB, error) {
 		return NewGoSSDB(name, dir, cache)
 	}
 	registerDBCreator(ssDBBackendStr, dbCreator, false)

@@ -68,7 +68,7 @@ type BaseStore struct {
 
 // NewBaseStore new base store struct
 func NewBaseStore(cfg *types.Store) *BaseStore {
-	db := dbm.NewDB("store", cfg.Driver, cfg.DbPath, cfg.DbCache)
+	db := dbm.NewDB("store", cfg.Driver, cfg.DbPath, cfg.DbCache, cfg.DbWriteBuffer)
 	db.SetCacheSize(102400)
 	store := &BaseStore{db: db}
 	store.done = make(chan struct{}, 1)

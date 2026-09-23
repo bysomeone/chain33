@@ -23,7 +23,7 @@ var pdbBench = &SsdbBench{}
 var HashKeyLen = 24
 
 func init() {
-	dbCreator := func(name string, dir string, cache int) (DB, error) {
+	dbCreator := func(name string, dir string, cache int, writeBuffer int) (DB, error) {
 		return NewPegasusDB(name, dir, cache)
 	}
 	registerDBCreator(goPegasusDbBackendStr, dbCreator, false)

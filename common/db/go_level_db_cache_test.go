@@ -35,10 +35,29 @@ func TestLevelDBCacheSizes(t *testing.T) {
 		{4096, 4096, 2048, 16},
 	}
 	for _, c := range cases {
-		handles, blockCacheMiB, writeBufMiB := levelDBCacheSizes(c.cache)
+		handles, blockCacheMiB, writeBufMiB := levelDBCacheSizes(c.cache, 0)
 		if handles != c.handles || blockCacheMiB != c.blockCacheMiB || writeBufMiB != c.writeBufMiB {
-			t.Errorf("levelDBCacheSizes(%d) = (%d, %d, %d), want (%d, %d, %d)",
+			t.Errorf("levelDBCacheSizes(%d, 0) = (%d, %d, %d), want (%d, %d, %d)",
 				c.cache, handles, blockCacheMiB, writeBufMiB, c.handles, c.blockCacheMiB, c.writeBufMiB)
+		}
+	}
+}
+
+// An explicit dbWriteBuffer overrides the derived value, whatever dbCache is.
+// Only the write buffer changes; the read side is untouched.
+func TestLevelDBCacheSizesExplicitWriteBuffer(t *testing.T) {
+	for _, c := range []struct{ cache, writeBuffer int }{
+		{64, 8}, {64, 32}, {256, 16}, {1024, 128}, {4, 64},
+	} {
+		handles, blockCacheMiB, writeBufMiB := levelDBCacheSizes(c.cache, c.writeBuffer)
+		defHandles, defBlockCacheMiB, _ := levelDBCacheSizes(c.cache, 0)
+		if writeBufMiB != c.writeBuffer {
+			t.Errorf("levelDBCacheSizes(%d, %d): write buffer = %d, want the explicit %d",
+				c.cache, c.writeBuffer, writeBufMiB, c.writeBuffer)
+		}
+		if handles != defHandles || blockCacheMiB != defBlockCacheMiB {
+			t.Errorf("levelDBCacheSizes(%d, %d): read side = (%d, %d), want it unchanged at (%d, %d)",
+				c.cache, c.writeBuffer, handles, blockCacheMiB, defHandles, defBlockCacheMiB)
 		}
 	}
 }
@@ -48,7 +67,7 @@ func TestLevelDBCacheSizes(t *testing.T) {
 // behaviour by upgrading.
 func TestLevelDBCacheSizesUnchangedAtDefaults(t *testing.T) {
 	for cache := 0; cache <= 64; cache++ {
-		handles, blockCacheMiB, writeBufMiB := levelDBCacheSizes(cache)
+		handles, blockCacheMiB, writeBufMiB := levelDBCacheSizes(cache, 0)
 		oldHandles, oldBlockCacheMiB, oldWriteBufMiB := oldLevelDBCacheSizes(cache)
 		if handles != oldHandles || blockCacheMiB != oldBlockCacheMiB || writeBufMiB != oldWriteBufMiB {
 			t.Errorf("dbCache=%d changed behaviour: got (%d, %d, %d), before the cap it was (%d, %d, %d)",
@@ -61,7 +80,7 @@ func TestLevelDBCacheSizesUnchangedAtDefaults(t *testing.T) {
 // growing without bound.
 func TestLevelDBCacheSizesWriteBufferStaysCapped(t *testing.T) {
 	for _, cache := range []int{128, 256, 512, 1024, 4096, 65536} {
-		if _, _, writeBufMiB := levelDBCacheSizes(cache); writeBufMiB != maxWriteBufferMiB {
+		if _, _, writeBufMiB := levelDBCacheSizes(cache, 0); writeBufMiB != maxWriteBufferMiB {
 			t.Errorf("dbCache=%d: write buffer = %d MiB, want it capped at %d MiB",
 				cache, writeBufMiB, maxWriteBufferMiB)
 		}

@@ -157,6 +157,8 @@ type Wallet struct {
 	DbPath string `json:"dbPath,omitempty"`
 	// walletdb缓存大小
 	DbCache int32 `json:"dbCache,omitempty"`
+	// walletdb写缓冲大小(MiB)，小于等于0时用默认值（见 common/db.maxWriteBufferMiB）
+	DbWriteBuffer int32 `json:"dbWriteBuffer,omitempty"`
 	// 钱包发送交易签名方式
 	SignType string `json:"signType,omitempty"`
 	CoinType string `json:"coinType,omitempty"`
@@ -172,6 +174,8 @@ type Store struct {
 	DbPath string `json:"dbPath,omitempty"`
 	// Cache大小
 	DbCache int32 `json:"dbCache,omitempty"`
+	// 写缓冲大小(MiB)，小于等于0时用默认值（见 common/db.maxWriteBufferMiB）
+	DbWriteBuffer int32 `json:"dbWriteBuffer,omitempty"`
 	// 数据库版本
 	LocalDBVersion string `json:"localdbVersion,omitempty"`
 	// 数据库版本
@@ -197,6 +201,7 @@ type BlockChain struct {
 	DbPath string `json:"dbPath,omitempty"`
 	// 数据库缓存大小
 	DbCache             int32 `json:"dbCache,omitempty"`
+	DbWriteBuffer       int32 `json:"dbWriteBuffer,omitempty"`
 	IsStrongConsistency bool  `json:"isStrongConsistency,omitempty"`
 	// 是否为单节点
 	SingleMode bool `json:"singleMode,omitempty"`
@@ -255,6 +260,8 @@ type P2P struct {
 	DbPath string `json:"dbPath,omitempty"`
 	// 数据库缓存大小
 	DbCache int32 `json:"dbCache,omitempty"`
+	// 写缓冲大小(MiB)，小于等于0时用默认值（见 common/db.maxWriteBufferMiB）
+	DbWriteBuffer int32 `json:"dbWriteBuffer,omitempty"`
 	// GRPC请求日志文件
 	GrpcLogFile string `json:"grpcLogFile,omitempty"`
 	// 是否启动P2P服务

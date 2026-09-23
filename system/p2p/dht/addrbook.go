@@ -37,7 +37,7 @@ func NewAddrBook(cfg *types.P2P) *AddrBook {
 		cfg: cfg,
 	}
 	dbPath := cfg.DbPath + "/" + p2pty.DHTTypeName
-	a.bookDb = db.NewDB("addrBook", a.cfg.Driver, dbPath, a.cfg.DbCache)
+	a.bookDb = db.NewDB("addrBook", a.cfg.Driver, dbPath, a.cfg.DbCache, a.cfg.DbWriteBuffer)
 	a.loadDb()
 	return a
 

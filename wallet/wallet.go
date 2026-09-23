@@ -97,7 +97,7 @@ func New(cfg *types.Chain33Config) *Wallet {
 	mcfg := cfg.GetModuleConfig().Wallet
 	//walletStore
 	//accountdb = account.NewCoinsAccount()
-	walletStoreDB := dbm.NewDB("wallet", mcfg.Driver, mcfg.DbPath, mcfg.DbCache)
+	walletStoreDB := dbm.NewDB("wallet", mcfg.Driver, mcfg.DbPath, mcfg.DbCache, mcfg.DbWriteBuffer)
 	//walletStore := NewStore(walletStoreDB)
 	walletStore := newStore(walletStoreDB)
 	//minFee = cfg.MinFee

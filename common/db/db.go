@@ -184,7 +184,7 @@ const (
 	goPegasusDbBackendStr = "pegasus"
 )
 
-type dbCreator func(name string, dir string, cache int) (DB, error)
+type dbCreator func(name string, dir string, cache int, writeBuffer int) (DB, error)
 
 var backends = map[string]dbCreator{}
 
@@ -196,14 +196,19 @@ func registerDBCreator(backend string, creator dbCreator, force bool) {
 	backends[backend] = creator
 }
 
-// NewDB new
-func NewDB(name string, backend string, dir string, cache int32) DB {
+// NewDB new. writeBuffer is optional, in MiB; zero or omitted means the
+// backend's own default.
+func NewDB(name string, backend string, dir string, cache int32, writeBuffer ...int32) DB {
 	dbCreator, ok := backends[backend]
 	if !ok {
 		fmt.Printf("Error initializing DB: %v\n", backend)
 		panic("initializing DB error")
 	}
-	db, err := dbCreator(name, dir, int(cache))
+	var writeBufferMiB int
+	if len(writeBuffer) > 0 {
+		writeBufferMiB = int(writeBuffer[0])
+	}
+	db, err := dbCreator(name, dir, int(cache), writeBufferMiB)
 	if err != nil {
 		fmt.Printf("Error initializing DB: %v\n", err)
 		panic("initializing DB error")

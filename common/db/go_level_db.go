@@ -36,8 +36,8 @@ const (
 )
 
 func init() {
-	dbCreator := func(name string, dir string, cache int) (DB, error) {
-		return NewGoLevelDB(name, dir, cache)
+	dbCreator := func(name string, dir string, cache int, writeBuffer int) (DB, error) {
+		return NewGoLevelDB(name, dir, cache, writeBuffer)
 	}
 	registerDBCreator(levelDBBackendStr, dbCreator, false)
 	registerDBCreator(goLevelDBBackendStr, dbCreator, false)
@@ -76,8 +76,10 @@ type GoLevelDB struct {
 // reached, so existing configurations are unaffected.
 const maxWriteBufferMiB = 16
 
-// levelDBCacheSizes derives the leveldb cache parameters from dbCache.
-func levelDBCacheSizes(cache int) (handles, blockCacheMiB, writeBufferMiB int) {
+// levelDBCacheSizes derives the leveldb cache parameters from dbCache. An
+// explicit writeBufferMiB greater than zero overrides the derived write buffer;
+// otherwise it is derived and capped at maxWriteBufferMiB.
+func levelDBCacheSizes(cache int, writeBufferMiB int) (handles, blockCacheMiB, wbMiB int) {
 	if cache == 0 {
 		cache = 64
 	}
@@ -89,14 +91,23 @@ func levelDBCacheSizes(cache int) (handles, blockCacheMiB, writeBufferMiB int) {
 		handles = 16
 	}
 	blockCacheMiB = cache / 2
-	writeBufferMiB = min(cache/4, maxWriteBufferMiB)
+	if writeBufferMiB > 0 {
+		wbMiB = writeBufferMiB
+	} else {
+		wbMiB = min(cache/4, maxWriteBufferMiB)
+	}
 	return
 }
 
-// NewGoLevelDB new
-func NewGoLevelDB(name string, dir string, cache int) (*GoLevelDB, error) {
+// NewGoLevelDB new. writeBuffer is optional, in MiB; zero or omitted derives it
+// from cache and caps it at maxWriteBufferMiB.
+func NewGoLevelDB(name string, dir string, cache int, writeBuffer ...int) (*GoLevelDB, error) {
 	dbPath := path.Join(dir, name+".db")
-	handles, blockCacheMiB, writeBufferMiB := levelDBCacheSizes(cache)
+	requested := 0
+	if len(writeBuffer) > 0 {
+		requested = writeBuffer[0]
+	}
+	handles, blockCacheMiB, writeBufferMiB := levelDBCacheSizes(cache, requested)
 	// Open the db and recover any potential corruptions
 	db, err := leveldb.OpenFile(dbPath, &opt.Options{
 		OpenFilesCacheCapacity: handles,

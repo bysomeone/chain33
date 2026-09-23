@@ -19,7 +19,7 @@ var mlog = log.New("module", "db.memdb")
 // memdb 应该无需区分同步与异步操作
 
 func init() {
-	dbCreator := func(name string, dir string, cache int) (DB, error) {
+	dbCreator := func(name string, dir string, cache int, writeBuffer int) (DB, error) {
 		return NewGoMemDB(name, dir, cache)
 	}
 	registerDBCreator(memDBBackendStr, dbCreator, false)
