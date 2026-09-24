@@ -21,21 +21,6 @@ import (
 	"github.com/golang/protobuf/proto"
 )
 
-// PROBE ONLY -- not for merge.
-//
-// The two exec-time address checks in this file came in with chain33 v1.67.0
-// (974ed88ed, 2022-02) and are not fork-gated. Blocks produced before the network
-// enforced them contain transfers to addresses that fail them -- bityuan block 546820
-// (2018-08-21) transfers coins to "DsYQcck3QFK9Wt1UWd5eoskWjk8JdYSCMoK", which fails
-// every registered driver -- so a replay from genesis stops there with
-// ErrCheckStateHash. Sweeping history needs the checks skipped up to the height at
-// which the network started enforcing them.
-//
-// MaxHeight disables them for the whole chain (exploration only). A real fix has to
-// pick the height at which a binary carrying them (>= bityuan v6.7.0) was deployed
-// network-wide and gate on that.
-var txToAddrCheckFromHeight int64 = types.MaxHeight
-
 // 执行器 -> db 环境
 type executor struct {
 	stateDB      dbm.KV
@@ -230,10 +215,12 @@ func (e *executor) execCheckTx(tx *types.Transaction, index int) error {
 		return err
 	}
 	//检查地址的有效性
-	if e.height >= txToAddrCheckFromHeight {
-		if err := address.CheckAddress(tx.To, e.height); err != nil {
-			return err
-		}
+	// dapp.CheckAddress, not the raw address.CheckAddress: it tolerates legacy address
+	// formats below ForkMultiSignAddress / ForkBase58AddressCheck (2270000 on bityuan),
+	// which is what the blocks already on the chain were executed with. The raw call has
+	// no such tolerance, so it makes those historical blocks unreplayable.
+	if err := drivers.CheckAddress(e.cfg, tx.To, e.height); err != nil {
+		return err
 	}
 	var exec drivers.Driver
 
@@ -279,10 +266,8 @@ func (e *executor) Exec(tx *types.Transaction, index int) (receipt *types.Receip
 
 	exec := e.loadDriver(tx, index)
 	//to 必须是一个地址
-	if e.height >= txToAddrCheckFromHeight {
-		if err := drivers.CheckAddress(e.cfg, tx.GetRealToAddr(), e.height); err != nil {
-			return nil, err
-		}
+	if err := drivers.CheckAddress(e.cfg, tx.GetRealToAddr(), e.height); err != nil {
+		return nil, err
 	}
 	if e.localDB != nil && e.cfg.IsFork(e.height, "ForkLocalDBAccess") {
 		e.localDB.(*LocalDB).DisableWrite()

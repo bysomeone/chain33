@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/33cn/chain33/common"
 	"github.com/decred/base58"
@@ -124,17 +125,35 @@ func CheckAddress(addr string, blockHeight int64) (e error) {
 		}
 		return nil
 	}
-	for _, d := range drivers {
+	// PROBE: iterate in a fixed order and report the *first* driver's failure rather than
+	// whichever one the map happened to yield last. Drivers are visited from the lowest id
+	// up -- the legacy base58 ones first -- so an address that fails only those (a wrong
+	// version byte or checksum) reports ErrCheckVersion / ErrAddressChecksum, the two
+	// errors dapp.CheckAddress tolerates before ForkMultiSignAddress /
+	// ForkBase58AddressCheck. Returning an arbitrary driver's error made that tolerance a
+	// coin flip, and a from-genesis replay of bityuan block 546820 depends on it.
+	ids := make([]int32, 0, len(drivers))
+	for id := range drivers {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	firstErr := error(nil)
+	for _, id := range ids {
+		d := drivers[id]
 		if !isEnable(blockHeight, d.enableHeight) {
 			continue
 		}
-		e = d.driver.ValidateAddr(addr)
-		if e == nil {
+		err := d.driver.ValidateAddr(addr)
+		if err == nil {
+			firstErr = nil
 			break
 		}
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
-	checkAddressCache.Add(addr, e)
-	return e
+	checkAddressCache.Add(addr, firstErr)
+	return firstErr
 }
 
 // GetAddressType get address type id
