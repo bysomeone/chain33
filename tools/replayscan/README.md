@@ -1,12 +1,26 @@
 # replayscan
 
-Finds every transaction on a chain whose **recipient address would be judged differently by
-different chain33 builds** — the addresses that can make a replayed block's state root stop
-matching the one on chain, stalling a node that syncs from scratch.
+Finds every transaction on a chain whose **replay can disagree with what the chain recorded**
+— the ones that make a replayed block's state root stop matching the one on chain, stalling a
+node that syncs from scratch.
 
-A full sync of the bityuan mainnet takes days, and it only tells you about a flip *after* it
-stalls. This walks the same data in about half an hour and lists the candidates up front,
-with the verdict the chain itself recorded, so the two can be compared.
+A full sync of the bityuan mainnet takes days, and it only tells you about a divergence
+*after* it stalls. This walks the same data in about half an hour and lists the candidates up
+front, with the verdict the chain itself recorded, so the two can be compared.
+
+Two classes are covered, in two modes:
+
+| mode | class | what flips |
+|---|---|---|
+| `addr` | recipient addresses | the fork gates in `system/dapp/driver.go` decide whether a legacy address is accepted, so a build or fork-height change moves the verdict |
+| `token` | token genesis amounts | `account.GenesisInit`'s amount bound, which chain33 v1.70.0 added and #1401 removed, decides whether a `finishCreate` succeeds |
+
+**Scope the run to the class you changed.** A mode's candidates can only appear where its code
+is in play — `addr` at a gate is only consulted below the fork height it gates, and the token
+bound only matters where the amount sits past it — so run only over the heights the change can
+reach. Scanning the whole chain "to be safe" multiplies the cost without making the answer any
+more reliable; the risk that matters is picking the range wrong, and that is decided by the
+change's own conditions, not by scanning more.
 
 ## Background: why address verdicts can flip
 
@@ -38,7 +52,7 @@ Two things about the raw check make its verdict build-dependent:
   the transfer (the coins path no longer validates the recipient's checksum) and the state
   root diverges. Reverting that one hunk is what this tool was written to justify.
 
-## The filter
+## The addr filter
 
 **Read the verdict the way a replay does**, not the way one driver sees it:
 
@@ -81,6 +95,22 @@ Candidates are then graded by the error, which is what the gates match on:
 So an `ErrCheckChecksum` hit with `receipt: 1` is exactly the 101641 case: the chain failed it,
 so the replay must fail it too.
 
+## The token filter
+
+`tokenFinishCreate` calls `account.GenesisInit(owner, token.GetTotal())` with the total the
+matching preCreate wrote into state. chain33 v1.70.0 made `GenesisInit` run
+`types.CheckAmount(amount, precision)`, which rejects `amount >= MaxCoin(1e9) *
+coinPrecision(1e8) = 1e17`, while `preCreate` allows anything up to `MaxTokenBalance` (9e18).
+A token whose total sits above `1e17` therefore cannot finish on a build carrying the bound,
+but the chain recorded its finish as a success — so the replay diverges there. #1401 removed
+the bound again.
+
+The tool walks the chain in height order, remembers each `preCreate` symbol and total, and
+reports the `finishCreate` transactions whose total is `>= 1e17` or negative. A token's symbol
+is unique per chain and its preCreate always precedes its finishCreate, so the map is small
+and safe to build as the walk advances. Only `token` (and the para-chain `user.p.X.token`)
+execers are decoded.
+
 ## Usage
 
 The database is locked by leveldb while a node runs, so **stop the node first** — a read-only
@@ -90,9 +120,12 @@ open is still refused (`resource temporarily unavailable`).
 # look at the on-disk layout of a table
 go run ./tools/replayscan -dump /path/to/datadir/blockchain.db "CHAIN-body-body-d-"
 
-# scan (prefix, and an optional row limit for a quick trial)
-go run ./tools/replayscan /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-"
-go run ./tools/replayscan /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-" 20000
+# scan (prefix, and optional row limit / output cap for a quick or bounded trial)
+go run ./tools/replayscan addr  /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-"
+go run ./tools/replayscan token /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-"
+
+# cap the output: stop once the hits reach maxout, so a wide filter cannot fill the disk
+go run ./tools/replayscan addr /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-" 0 100000
 ```
 
 Output is JSON lines, one per candidate:
@@ -103,11 +136,22 @@ Output is JSON lines, one per candidate:
  "verdict_fork":"Address Checksum error","verdict_eth":"Address Checksum error"}
 ```
 
-`receipt` is the type the block was produced with: 1 = `ExecPack`, 2 = `ExecOk`, -1 = absent.
-The four `verdict_*` fields are what `address.CheckAddress` answers at the transaction's own
-height, at 0, at the btcMultiSign enable height and at the eth enable height — so a candidate
-whose verdicts differ across them is height-dependent, and one whose verdicts agree is decided
-by the error alone (which is the shape a gate change moves).
+`addr` hits carry `receipt` and the four `verdict_*` fields: what `address.CheckAddress`
+answers at the transaction's own height, at 0, at the btcMultiSign enable height and at the
+eth enable height. A candidate whose verdicts differ across them is height-dependent; one
+whose verdicts agree is decided by the error alone, which is the shape a gate change moves.
+
+`token` hits carry the symbol, the total the preCreate recorded and `receipt`:
+
+```json
+{"height":394223,"tx_index":1,"execer":"token","symbol":"TEST","total":9000000000000000000,"receipt":2}
+```
+
+In both modes `receipt` is the type the block was produced with: 1 = `ExecPack`, 2 =
+`ExecOk`, -1 = absent. Put it next to what the replay now decides: for an `addr` hit,
+accepting an `ExecPack` or rejecting an `ExecOk` is a divergence; for a `token` hit, a
+`finishCreate` the chain recorded as `ExecOk` diverges on any build that still carries the
+`GenesisInit` bound.
 
 ## How it reads the data
 
@@ -141,3 +185,12 @@ non-parallel chain `GetRealToAddr()` returns `tx.To`) and `Receipts[i].Ty`.
   build — a pre-existing condition, not something these changes introduced.
 * **`GetRealToAddr()` on a parallel chain** resolves to a payload address; this tool reads
   `tx.To` only.
+* **A `token` run that starts above a token's preCreate.** The total comes from the preCreate
+  seen earlier in the same walk, so a run scoped to a height range misses the finishCreate of
+  any token created below that range — those show up in the `__finish_without_precreate`
+  count. Start the token scan at height 0, or check that counter is zero before trusting the
+  result.
+* **Other `account.GenesisInit` callers** are not decoded — `coins` and `coinsx` genesis, the
+  `js` mint path, and token's own `withdraw`/`transfer` genesis all pass an amount taken from
+  their own payload, so the same bound applies to them. Only the token preCreate/finishCreate
+  pair is covered.

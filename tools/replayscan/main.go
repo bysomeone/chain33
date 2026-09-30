@@ -1,14 +1,14 @@
-// chain33scan walks a chain33 blockchain.db and reports every transaction whose recipient
-// address is judged differently at different heights, or by different builds -- the
-// addresses that can make a replayed block's state root stop matching the one on chain and
-// stall a node that syncs from scratch.
+// replayscan walks a chain33 blockchain.db and reports the transactions whose replay can
+// disagree with what the chain recorded -- the ones that can make a replayed block's state
+// root stop matching the one on chain and stall a node that syncs from scratch.
 //
 // Modes:
 //
-//	chain33scan -dump <db> <prefix>              print the first keys under a prefix
-//	chain33scan <db> <out.jsonl> <body-prefix> [limit]
+//	replayscan -dump <db> <prefix>                        print the first keys under a prefix
+//	replayscan addr  <db> <out.jsonl> <body-prefix> [limit] [maxout]
+//	replayscan token <db> <out.jsonl> <body-prefix> [limit] [maxout]
 //
-// # The verdict that matters
+// # addr: recipient addresses judged differently by different builds
 //
 // What a replay actually consults is `address.CheckAddress(addr, height)`, which walks every
 // enabled driver and accepts if any one of them does. Two consequences shape this tool:
@@ -24,6 +24,16 @@
 //
 // The per-height verdicts are reported for the heights that matter on bityuan, where the
 // driver enable heights are eth = 19900000 and btcMultiSign = 2270000 (btc.go / bityuan.go).
+//
+// # token: token amounts a build's GenesisInit bound rejects
+//
+// `tokenFinishCreate` calls `account.GenesisInit(owner, token.GetTotal())`, and the total it
+// passes is the one the matching preCreate wrote into state. chain33 v1.70.0 made GenesisInit
+// run `types.CheckAmount(amount, precision)`, which rejects `amount >= MaxCoin(1e9) *
+// coinPrecision(1e8)`, while preCreate allows anything up to MaxTokenBalance (9e18) -- so a
+// token whose total sits above that bound can no longer finish. Blocks on chain recorded such
+// a finish as a success, so a build carrying the bound diverges at that height. This mode
+// lists the finishCreate transactions whose preCreate total falls outside the bound.
 package main
 
 import (
@@ -32,6 +42,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/33cn/chain33/common/address"
 	"github.com/33cn/chain33/types"
@@ -43,7 +54,23 @@ import (
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/syndtr/goleveldb/leveldb/util"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+)
+
+// maxCoinPrecision is MaxCoin(1e9) * coinPrecision(1e8), the bound types.CheckAmount imposes
+// on a token genesis. What #1401 changed is whether GenesisInit runs that check at all.
+const maxCoinPrecision = int64(1e17)
+
+// The token oneof arms this tool decodes, and the field numbers inside them. plugin cannot be
+// imported from chain33, so both are walked by hand.
+//
+//	TokenAction        { preCreate = 1, finishCreate = 2 }
+//	TokenPreCreate     { name = 1, symbol = 2, introduction = 3, total = 4 }
+//	TokenFinishCreate  { symbol = 1, owner = 2 }
+const (
+	tokenPreCreate    = 1
+	tokenFinishCreate = 2
 )
 
 // bityuan's driver enable heights. Raising these changes every verdict below that height,
@@ -53,7 +80,17 @@ const (
 	ethEnable          = int64(19900000)
 )
 
-type hit struct {
+// bodyRowPrefix selects the table rows that hold a BlockBody. The CHAIN-body table also
+// stores an index row per block (same height and hash, keyed "-i-hash-..." and holding only
+// the primary key), which this prefix skips, so the walk only visits real bodies.
+const bodyRowPrefix = "CHAIN-body-body-d-"
+
+// rowHeaderLen is the table package's row header: 8-byte length + 12-byte height + 32-byte hash.
+const rowHeaderLen = 52
+
+const keyPrefixLen = len(bodyRowPrefix)
+
+type addrHit struct {
 	Height  int64  `json:"height"`
 	TxIndex int    `json:"tx_index"`
 	Execer  string `json:"execer"`
@@ -67,6 +104,15 @@ type hit struct {
 	VerdictEth  string `json:"verdict_eth"`  // h=eth enable
 }
 
+type tokenHit struct {
+	Height  int64  `json:"height"`
+	TxIndex int    `json:"tx_index"`
+	Execer  string `json:"execer"`
+	Symbol  string `json:"symbol"`
+	Total   int64  `json:"total"`
+	Receipt int32  `json:"receipt"`
+}
+
 // verdictStr renders what address.CheckAddress answered, which is what Exec consults.
 func verdictStr(err error) string {
 	if err == nil {
@@ -74,35 +120,6 @@ func verdictStr(err error) string {
 	}
 	return err.Error()
 }
-
-// isCandidate decides whether an address is worth reporting, using the fact that the
-// enabled driver set only grows with height. Two kinds can flip, and both are kept:
-//
-//   - height-dependent: accepted at the most permissive height but rejected at the
-//     strictest one. An eth address is the shape -- rejected while only btc and utxo are
-//     enabled, accepted once eth's enable height is reached.
-//   - error-dependent: rejected everywhere, but by an error a fork gate or a build change
-//     decides on. Block 101641's address is the shape: ErrCheckChecksum at every height,
-//     tolerated only by the extra gate v1.72.3 added.
-//
-// Everything else is noise: an address rejected at every height by something no gate looks
-// at -- ErrAddressLength for a string that is not an address at all -- cannot flip, and
-// those made up 264 of 272 hits before this filter existed.
-func isCandidate(eStrict, ePermissive error) bool {
-	heightDependent := ePermissive == nil && eStrict != nil
-	errorDependent := ePermissive != nil && ePermissive != address.ErrAddressLength
-	return heightDependent || errorDependent
-}
-
-// bodyRowPrefix selects the table rows that hold a BlockBody. The CHAIN-body table also
-// stores an index row per block (same height and hash, keyed "-i-hash-..." and holding only
-// the primary key), which this prefix skips, so the walk only visits real bodies.
-const bodyRowPrefix = "CHAIN-body-body-d-"
-
-// rowHeaderLen is the table package's row header: 8-byte length + 12-byte height + 32-byte hash.
-const rowHeaderLen = 52
-
-const keyPrefixLen = len(bodyRowPrefix)
 
 // heightFromKey reads the height zero-padded to 12 digits inside the key, which is more
 // trustworthy than the field inside the value.
@@ -152,7 +169,151 @@ func head(b []byte, n int) []byte {
 	return b[:n]
 }
 
-func scan(dbPath, outPath, prefix string, limit int64) {
+// tokenActionArm splits a TokenAction into its oneof arm number and the arm's own bytes, so
+// the caller can read fields out of preCreate or finishCreate without knowing which it got.
+func tokenActionArm(payload []byte) (int, []byte, bool) {
+	for len(payload) > 0 {
+		num, typ, n := protowire.ConsumeTag(payload)
+		if n < 0 {
+			return 0, nil, false
+		}
+		payload = payload[n:]
+		if (num == tokenPreCreate || num == tokenFinishCreate) && typ == protowire.BytesType {
+			sub, n2 := protowire.ConsumeBytes(payload)
+			if n2 < 0 {
+				return 0, nil, false
+			}
+			return int(num), sub, true
+		}
+		n2 := protowire.ConsumeFieldValue(num, typ, payload)
+		if n2 < 0 {
+			return 0, nil, false
+		}
+		payload = payload[n2:]
+	}
+	return 0, nil, false
+}
+
+func protoString(msg []byte, field int) (string, bool) {
+	for len(msg) > 0 {
+		num, typ, n := protowire.ConsumeTag(msg)
+		if n < 0 {
+			return "", false
+		}
+		msg = msg[n:]
+		if int(num) == field && typ == protowire.BytesType {
+			v, n2 := protowire.ConsumeBytes(msg)
+			if n2 < 0 {
+				return "", false
+			}
+			return string(v), true
+		}
+		n2 := protowire.ConsumeFieldValue(num, typ, msg)
+		if n2 < 0 {
+			return "", false
+		}
+		msg = msg[n2:]
+	}
+	return "", false
+}
+
+func protoInt(msg []byte, field int) (int64, bool) {
+	for len(msg) > 0 {
+		num, typ, n := protowire.ConsumeTag(msg)
+		if n < 0 {
+			return 0, false
+		}
+		msg = msg[n:]
+		if int(num) == field && typ == protowire.VarintType {
+			v, n2 := protowire.ConsumeVarint(msg)
+			if n2 < 0 {
+				return 0, false
+			}
+			return int64(v), true
+		}
+		n2 := protowire.ConsumeFieldValue(num, typ, msg)
+		if n2 < 0 {
+			return 0, false
+		}
+		msg = msg[n2:]
+	}
+	return 0, false
+}
+
+// isTokenExecer accepts "token" and the para-chain spelling "user.p.<title>.token".
+func isTokenExecer(execer string) bool {
+	return execer == "token" || strings.HasSuffix(execer, ".token")
+}
+
+// isAddrCandidate decides whether an address is worth reporting, using the fact that the
+// enabled driver set only grows with height. Two kinds can flip, and both are kept:
+//
+//   - height-dependent: accepted at the most permissive height but rejected at the
+//     strictest one. An eth address is the shape -- rejected while only btc and utxo are
+//     enabled, accepted once eth's enable height is reached.
+//   - error-dependent: rejected everywhere, but by an error a fork gate or a build change
+//     decides on. Block 101641's address is the shape: ErrCheckChecksum at every height,
+//     tolerated only by the extra gate v1.72.3 added.
+//
+// Everything else is noise: an address rejected at every height by something no gate looks
+// at -- ErrAddressLength for a string that is not an address at all -- cannot flip, and
+// those made up 264 of 272 hits before this filter existed.
+func isAddrCandidate(eStrict, ePermissive error) bool {
+	heightDependent := ePermissive == nil && eStrict != nil
+	errorDependent := ePermissive != nil && ePermissive != address.ErrAddressLength
+	return heightDependent || errorDependent
+}
+
+// tokenScan walks a chain, remembering every preCreate total and reporting the finishCreate
+// transactions whose total the bounded CheckAmount would reject. Symbols are unique per
+// chain and a finishCreate always follows its preCreate, so the map is both small and safe
+// to build as the walk advances.
+func tokenScan(emit func(interface{}) error, tx *types.Transaction, height int64, txIndex int, receipt int32, totals map[string]int64, stats map[string]int64) (bool, error) {
+	if !isTokenExecer(string(tx.GetExecer())) {
+		return false, nil
+	}
+	payload := tx.GetPayload()
+	arm, body, ok := tokenActionArm(payload)
+	if !ok {
+		return false, nil
+	}
+	switch arm {
+	case tokenPreCreate:
+		// symbol = 2, total = 4
+		if sym, ok := protoString(body, 2); ok {
+			if total, ok := protoInt(body, 4); ok {
+				totals[sym] = total
+			}
+		}
+	case tokenFinishCreate:
+		// symbol = 1
+		sym, ok := protoString(body, 1)
+		if !ok {
+			return false, nil
+		}
+		total, ok := totals[sym]
+		if !ok {
+			stats["__finish_without_precreate"]++
+			return false, nil
+		}
+		if total < maxCoinPrecision && total >= 0 {
+			return false, nil
+		}
+		stats["over_bound"]++
+		return true, emit(tokenHit{
+			Height:  height,
+			TxIndex: txIndex,
+			Execer:  string(tx.GetExecer()),
+			Symbol:  sym,
+			Total:   total,
+			Receipt: receipt,
+		})
+	}
+	return false, nil
+}
+
+// scan walks the block bodies in height order and reports the candidates the mode selects.
+func scan(dbPath, outPath, prefix, mode string, limit, maxOut int64) {
 	// Pin the enabled set to bityuan's configuration; the registered default is 0 for every
 	// driver, which would accept addresses this chain rejects at low heights.
 	address.Init(&address.Config{
@@ -174,6 +335,7 @@ func scan(dbPath, outPath, prefix string, limit int64) {
 	}
 	defer out.Close()
 	enc := json.NewEncoder(out)
+	emit := func(v interface{}) error { return enc.Encode(v) }
 
 	iter := db.NewIterator(util.BytesPrefix([]byte(prefix)), nil)
 	defer iter.Release()
@@ -181,6 +343,7 @@ func scan(dbPath, outPath, prefix string, limit int64) {
 	var nRows, nTxs, nHits int64
 	var lastHeight int64
 	stats := map[string]int64{}
+	totals := map[string]int64{}
 
 	for iter.Next() {
 		raw := iter.Value()
@@ -201,40 +364,53 @@ func scan(dbPath, outPath, prefix string, limit int64) {
 
 		for i, tx := range body.Txs {
 			nTxs++
-			to := tx.GetTo()
-			if to == "" {
-				continue
-			}
-			// Two heights bracket the verdict: 0 enables the fewest drivers, ethEnable the
-			// most, and the set only grows in between. Comparing those two decides whether
-			// anything can flip at all.
-			eStrict := address.CheckAddress(to, 0)
-			ePermissive := address.CheckAddress(to, ethEnable)
-			if !isCandidate(eStrict, ePermissive) {
-				continue
-			}
-			nHits++
-
 			rcpt := int32(-1)
 			if i < len(body.Receipts) && body.Receipts[i] != nil {
 				rcpt = int32(body.Receipts[i].GetTy())
 			}
-			h := hit{
-				Height:      body.Height,
-				TxIndex:     i,
-				Execer:      string(tx.GetExecer()),
-				To:          to,
-				Receipt:     rcpt,
-				VerdictHere: verdictStr(address.CheckAddress(to, body.Height)),
-				Verdict0:    verdictStr(eStrict),
-				VerdictFork: verdictStr(address.CheckAddress(to, btcMultiSignEnable)),
-				VerdictEth:  verdictStr(ePermissive),
-			}
-			stats[h.VerdictHere]++
+			pushed := false
 
-			if err := enc.Encode(h); err != nil {
-				fmt.Fprintln(os.Stderr, "encode:", err)
-				os.Exit(1)
+			if mode == modeToken {
+				var err error
+				pushed, err = tokenScan(emit, tx, body.Height, i, rcpt, totals, stats)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "encode:", err)
+					os.Exit(1)
+				}
+			} else {
+				to := tx.GetTo()
+				if to == "" {
+					continue
+				}
+				// Two heights bracket the verdict: 0 enables the fewest drivers, ethEnable
+				// the most, and the set only grows in between. Comparing those two decides
+				// whether anything can flip at all.
+				eStrict := address.CheckAddress(to, 0)
+				ePermissive := address.CheckAddress(to, ethEnable)
+				if !isAddrCandidate(eStrict, ePermissive) {
+					continue
+				}
+				h := addrHit{
+					Height:      body.Height,
+					TxIndex:     i,
+					Execer:      string(tx.GetExecer()),
+					To:          to,
+					Receipt:     rcpt,
+					VerdictHere: verdictStr(address.CheckAddress(to, body.Height)),
+					Verdict0:    verdictStr(eStrict),
+					VerdictFork: verdictStr(address.CheckAddress(to, btcMultiSignEnable)),
+					VerdictEth:  verdictStr(ePermissive),
+				}
+				stats[h.VerdictHere]++
+				if err := enc.Encode(h); err != nil {
+					fmt.Fprintln(os.Stderr, "encode:", err)
+					os.Exit(1)
+				}
+				pushed = true
+			}
+
+			if pushed {
+				nHits++
 			}
 		}
 
@@ -245,15 +421,33 @@ func scan(dbPath, outPath, prefix string, limit int64) {
 			fmt.Fprintf(os.Stderr, "stopped at limit=%d\n", limit)
 			break
 		}
+		// Stop before the output can fill the filesystem. A write target with no ceiling is
+		// how the first run of this tool filled a 20G root partition.
+		if maxOut > 0 && nHits >= maxOut {
+			fmt.Fprintf(os.Stderr, "stopped: hits reached maxOut=%d (output capped)\n", maxOut)
+			break
+		}
 	}
 	if err := iter.Error(); err != nil {
 		fmt.Fprintln(os.Stderr, "iterator:", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "done rows=%d txs=%d hits=%d lastHeight=%d\n", nRows, nTxs, nHits, lastHeight)
+	fmt.Fprintf(os.Stderr, "done mode=%s rows=%d txs=%d hits=%d lastHeight=%d\n", mode, nRows, nTxs, nHits, lastHeight)
 	for k, v := range stats {
 		fmt.Fprintf(os.Stderr, "  %-28s %d\n", k, v)
 	}
+}
+
+const (
+	modeAddr  = "addr"
+	modeToken = "token"
+)
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: replayscan -dump <db> <prefix>")
+	fmt.Fprintln(os.Stderr, "       replayscan addr  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
+	fmt.Fprintln(os.Stderr, "       replayscan token <db> <out.jsonl> <body-prefix> [limit] [maxout]")
+	os.Exit(2)
 }
 
 func main() {
@@ -261,19 +455,29 @@ func main() {
 		dump(os.Args[2], os.Args[3], 12)
 		return
 	}
-	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: chain33scan <db> <out.jsonl> <body-prefix> [limit]")
-		fmt.Fprintln(os.Stderr, "       chain33scan -dump <db> <prefix>")
-		os.Exit(2)
+	if len(os.Args) < 5 {
+		usage()
 	}
-	var limit int64
-	if len(os.Args) >= 5 {
-		v, err := strconv.ParseInt(os.Args[4], 10, 64)
+	mode := os.Args[1]
+	if mode != modeAddr && mode != modeToken {
+		usage()
+	}
+	var limit, maxOut int64
+	if len(os.Args) >= 6 {
+		v, err := strconv.ParseInt(os.Args[5], 10, 64)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "bad limit:", os.Args[4])
+			fmt.Fprintln(os.Stderr, "bad limit:", os.Args[5])
 			os.Exit(2)
 		}
 		limit = v
 	}
-	scan(os.Args[1], os.Args[2], os.Args[3], limit)
+	if len(os.Args) >= 7 {
+		v, err := strconv.ParseInt(os.Args[6], 10, 64)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "bad maxout:", os.Args[6])
+			os.Exit(2)
+		}
+		maxOut = v
+	}
+	scan(os.Args[2], os.Args[3], os.Args[4], mode, limit, maxOut)
 }
