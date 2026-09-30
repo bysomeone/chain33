@@ -40,15 +40,29 @@ Two things about the raw check make its verdict build-dependent:
 
 ## The filter
 
-One call decides it:
+**Read the verdict the way a replay does**, not the way one driver sees it:
 
 ```go
-e := address.CheckBase58Address(address.NormalVer, addr)
-if e != nil && e != address.ErrAddressLength { /* candidate */ }
+eStrict     := address.CheckAddress(addr, 0)           // fewest drivers enabled
+ePermissive := address.CheckAddress(addr, ethEnable)   // most drivers enabled
+
+candidate := (ePermissive == nil && eStrict != nil) ||                  // height-dependent
+             (ePermissive != nil && ePermissive != address.ErrAddressLength) // error-dependent
 ```
 
-A valid address of the normal version returns nil, and anything shorter than 25 bytes returns
-`ErrAddressLength`; both verdicts agree across the builds, so only what is left can flip.
+Reading a single driver is a trap that cost a wrong report once: `CheckBase58Address(NormalVer,
+addr)` says `ErrCheckVersion` for a **multisig** address, but `btcMultiSign` accepts it once that
+driver is enabled, so the replay accepts it too. The tool called two live mainnet transactions a
+stall risk on that basis; they were fine.
+
+Two properties make the two extreme heights sufficient:
+
+* a driver turns on at its `enableHeight` and never off, so the enabled set only grows with
+  height — the permissive end bounds every higher verdict, the strict end bounds every lower one;
+* at the strict end an `ErrAddressLength` cannot be rescued by anything (no driver accepts a
+  string that is not an address), so those are dropped as noise. They were 264 of 272 hits
+  before this filter existed.
+
 Candidates are then graded by the error, which is what the gates match on:
 
 | error | shape | tolerated below the fork by |
@@ -74,20 +88,26 @@ open is still refused (`resource temporarily unavailable`).
 
 ```sh
 # look at the on-disk layout of a table
-go run ./tools/replayscan -dump /path/to/datadir/blockchain.db "CHAIN-body"
+go run ./tools/replayscan -dump /path/to/datadir/blockchain.db "CHAIN-body-body-d-"
 
 # scan (prefix, and an optional row limit for a quick trial)
-go run ./tools/replayscan /path/to/datadir/blockchain.db out.jsonl CHAIN-body
-go run ./tools/replayscan /path/to/datadir/blockchain.db out.jsonl CHAIN-body 20000
+go run ./tools/replayscan /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-"
+go run ./tools/replayscan /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-" 20000
 ```
 
 Output is JSON lines, one per candidate:
 
 ```json
-{"height":101641,"tx_index":2,"execer":"coins","to":"1Di16bUjPJnvZ8Hrf4vuQDffzkv9jC5Jp","err":"Address Checksum error","receipt":1}
+{"height":101641,"tx_index":2,"execer":"coins","to":"1Di16bUjPJnvZ8Hrf4vuQDffzkv9jC5Jp","receipt":1,
+ "verdict_here":"Address Checksum error","verdict_h0":"Address Checksum error",
+ "verdict_fork":"Address Checksum error","verdict_eth":"Address Checksum error"}
 ```
 
 `receipt` is the type the block was produced with: 1 = `ExecPack`, 2 = `ExecOk`, -1 = absent.
+The four `verdict_*` fields are what `address.CheckAddress` answers at the transaction's own
+height, at 0, at the btcMultiSign enable height and at the eth enable height — so a candidate
+whose verdicts differ across them is height-dependent, and one whose verdicts agree is decided
+by the error alone (which is the shape a gate change moves).
 
 ## How it reads the data
 

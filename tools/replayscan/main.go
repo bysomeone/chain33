@@ -1,26 +1,29 @@
-// chain33scan walks a chain33 blockchain.db and reports every transaction whose
-// recipient address is a "flip candidate": an address whose validity verdict differs
-// between the chain33 builds under comparison.
+// chain33scan walks a chain33 blockchain.db and reports every transaction whose recipient
+// address is judged differently at different heights, or by different builds -- the
+// addresses that can make a replayed block's state root stop matching the one on chain and
+// stall a node that syncs from scratch.
 //
-// Two modes:
+// Modes:
 //
-//	chain33scan -dump <db> <prefix>      print the first keys under a prefix (layout probe)
-//	chain33scan <db> <out.jsonl>         scan and emit hits
+//	chain33scan -dump <db> <prefix>              print the first keys under a prefix
+//	chain33scan <db> <out.jsonl> <body-prefix> [limit]
 //
-// The filter is one call. For an address that is a valid base58 form of the normal
-// version the check returns nil, and for anything shorter than 25 bytes it returns
-// ErrAddressLength; both verdicts are identical across the builds, so only what is left
-// can flip. Everything else is classified by the error the btc driver reports, which is
-// what decides the fork gates:
+// # The verdict that matters
 //
-//	ErrCheckVersion      (version byte != 0x00)   -> tolerated by the ForkMultiSignAddress gate
-//	ErrAddressChecksum   (len > 25, checksum bad) -> tolerated by the ForkBase58AddressCheck gate
-//	ErrCheckChecksum     (len == 25, checksum bad) -> only tolerated by the extra gate that
-//	                                                  v1.72.3 added and that we are reverting
+// What a replay actually consults is `address.CheckAddress(addr, height)`, which walks every
+// enabled driver and accepts if any one of them does. Two consequences shape this tool:
 //
-// Each hit carries block height, transaction index, execer, the address, the error and the
-// receipt type the block was produced with (2 = ExecOk, 1 = ExecPack), so the chain's own
-// verdict can be put next to the replay verdict.
+//   - Reading a single driver (e.g. CheckBase58Address with the normal version) is not the
+//     verdict. A multisig address (version 0x01) is rejected by `btc` but accepted by
+//     `btcMultiSign` once that driver is enabled, so a per-driver reading calls it a flip
+//     when it is not.
+//   - A driver is enabled from its enableHeight upwards and never switched off, so the set
+//     only grows with height and a stricter set can only reject more. Comparing the two
+//     extreme heights (0, and the highest enable height) therefore brackets every verdict a
+//     replay can produce, and decides whether an address is worth reporting at all.
+//
+// The per-height verdicts are reported for the heights that matter on bityuan, where the
+// driver enable heights are eth = 19900000 and btcMultiSign = 2270000 (btc.go / bityuan.go).
 package main
 
 import (
@@ -32,10 +35,22 @@ import (
 
 	"github.com/33cn/chain33/common/address"
 	"github.com/33cn/chain33/types"
+
+	// Registers the address drivers (btc, btcMultiSign, utxo, eth) via their init.
+	_ "github.com/33cn/chain33/system/address/btc"
+	_ "github.com/33cn/chain33/system/address/eth"
+
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/syndtr/goleveldb/leveldb/util"
 	"google.golang.org/protobuf/proto"
+)
+
+// bityuan's driver enable heights. Raising these changes every verdict below that height,
+// so they are the heights a candidate has to be compared across.
+const (
+	btcMultiSignEnable = int64(2270000)
+	ethEnable          = int64(19900000)
 )
 
 type hit struct {
@@ -43,18 +58,54 @@ type hit struct {
 	TxIndex int    `json:"tx_index"`
 	Execer  string `json:"execer"`
 	To      string `json:"to"`
-	Err     string `json:"err"`
 	Receipt int32  `json:"receipt"`
+
+	// Verdicts along the real path (all enabled drivers), at the heights that matter.
+	VerdictHere string `json:"verdict_here"` // at the height the transaction sits at
+	Verdict0    string `json:"verdict_h0"`   // h=0, the strictest enabled set
+	VerdictFork string `json:"verdict_fork"` // h=btcMultiSign enable
+	VerdictEth  string `json:"verdict_eth"`  // h=eth enable
 }
+
+// verdictStr renders what address.CheckAddress answered, which is what Exec consults.
+func verdictStr(err error) string {
+	if err == nil {
+		return "ACCEPT"
+	}
+	return err.Error()
+}
+
+// isCandidate decides whether an address is worth reporting, using the fact that the
+// enabled driver set only grows with height. Two kinds can flip, and both are kept:
+//
+//   - height-dependent: accepted at the most permissive height but rejected at the
+//     strictest one. An eth address is the shape -- rejected while only btc and utxo are
+//     enabled, accepted once eth's enable height is reached.
+//   - error-dependent: rejected everywhere, but by an error a fork gate or a build change
+//     decides on. Block 101641's address is the shape: ErrCheckChecksum at every height,
+//     tolerated only by the extra gate v1.72.3 added.
+//
+// Everything else is noise: an address rejected at every height by something no gate looks
+// at -- ErrAddressLength for a string that is not an address at all -- cannot flip, and
+// those made up 264 of 272 hits before this filter existed.
+func isCandidate(eStrict, ePermissive error) bool {
+	heightDependent := ePermissive == nil && eStrict != nil
+	errorDependent := ePermissive != nil && ePermissive != address.ErrAddressLength
+	return heightDependent || errorDependent
+}
+
+// bodyRowPrefix selects the table rows that hold a BlockBody. The CHAIN-body table also
+// stores an index row per block (same height and hash, keyed "-i-hash-..." and holding only
+// the primary key), which this prefix skips, so the walk only visits real bodies.
+const bodyRowPrefix = "CHAIN-body-body-d-"
 
 // rowHeaderLen is the table package's row header: 8-byte length + 12-byte height + 32-byte hash.
 const rowHeaderLen = 52
 
-// keyPrefix is CHAIN-body + the table name, as seen in the dumped keys.
-const keyPrefixLen = len("CHAIN-body-body-d-")
+const keyPrefixLen = len(bodyRowPrefix)
 
-// heightFromKey reads the height that is zero-padded to 12 digits inside the key, which is
-// more trustworthy than the field inside the value.
+// heightFromKey reads the height zero-padded to 12 digits inside the key, which is more
+// trustworthy than the field inside the value.
 func heightFromKey(key []byte) (int64, bool) {
 	if len(key) < keyPrefixLen+12 {
 		return 0, false
@@ -75,8 +126,6 @@ func open(dbPath string) *leveldb.DB {
 	return db
 }
 
-// dump prints the first keys under a prefix, so the on-disk layout of a table can be read
-// off real data instead of derived from the table package.
 func dump(dbPath, prefix string, n int) {
 	db := open(dbPath)
 	defer db.Close()
@@ -104,6 +153,17 @@ func head(b []byte, n int) []byte {
 }
 
 func scan(dbPath, outPath, prefix string, limit int64) {
+	// Pin the enabled set to bityuan's configuration; the registered default is 0 for every
+	// driver, which would accept addresses this chain rejects at low heights.
+	address.Init(&address.Config{
+		EnableHeight: map[string]int64{
+			"btc":          0,
+			"btcMultiSign": btcMultiSignEnable,
+			"eth":          ethEnable,
+		},
+		DefaultDriver: "btc",
+	})
+
 	db := open(dbPath)
 	defer db.Close()
 
@@ -124,9 +184,6 @@ func scan(dbPath, outPath, prefix string, limit int64) {
 
 	for iter.Next() {
 		raw := iter.Value()
-		// The row is wrapped by the table package: an 8-byte little-endian length (44 =
-		// 12 + 32), the 12-byte zero-padded height and the 32-byte block hash, then the
-		// BlockBody protobuf itself.
 		if len(raw) < rowHeaderLen {
 			stats["__too_short"]++
 			continue
@@ -148,25 +205,34 @@ func scan(dbPath, outPath, prefix string, limit int64) {
 			if to == "" {
 				continue
 			}
-			e := address.CheckBase58Address(address.NormalVer, to)
-			if e == nil || e == address.ErrAddressLength {
+			// Two heights bracket the verdict: 0 enables the fewest drivers, ethEnable the
+			// most, and the set only grows in between. Comparing those two decides whether
+			// anything can flip at all.
+			eStrict := address.CheckAddress(to, 0)
+			ePermissive := address.CheckAddress(to, ethEnable)
+			if !isCandidate(eStrict, ePermissive) {
 				continue
 			}
 			nHits++
-			stats[e.Error()]++
 
 			rcpt := int32(-1)
 			if i < len(body.Receipts) && body.Receipts[i] != nil {
 				rcpt = int32(body.Receipts[i].GetTy())
 			}
-			if err := enc.Encode(hit{
-				Height:  body.Height,
-				TxIndex: i,
-				Execer:  string(tx.GetExecer()),
-				To:      to,
-				Err:     e.Error(),
-				Receipt: rcpt,
-			}); err != nil {
+			h := hit{
+				Height:      body.Height,
+				TxIndex:     i,
+				Execer:      string(tx.GetExecer()),
+				To:          to,
+				Receipt:     rcpt,
+				VerdictHere: verdictStr(address.CheckAddress(to, body.Height)),
+				Verdict0:    verdictStr(eStrict),
+				VerdictFork: verdictStr(address.CheckAddress(to, btcMultiSignEnable)),
+				VerdictEth:  verdictStr(ePermissive),
+			}
+			stats[h.VerdictHere]++
+
+			if err := enc.Encode(h); err != nil {
 				fmt.Fprintln(os.Stderr, "encode:", err)
 				os.Exit(1)
 			}
@@ -186,7 +252,7 @@ func scan(dbPath, outPath, prefix string, limit int64) {
 
 	fmt.Fprintf(os.Stderr, "done rows=%d txs=%d hits=%d lastHeight=%d\n", nRows, nTxs, nHits, lastHeight)
 	for k, v := range stats {
-		fmt.Fprintf(os.Stderr, "  %-24s %d\n", k, v)
+		fmt.Fprintf(os.Stderr, "  %-28s %d\n", k, v)
 	}
 }
 
