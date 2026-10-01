@@ -108,8 +108,14 @@ the bound again.
 The tool walks the chain in height order, remembers each `preCreate` symbol and total, and
 reports the `finishCreate` transactions whose total is `>= 1e17` or negative. A token's symbol
 is unique per chain and its preCreate always precedes its finishCreate, so the map is small
-and safe to build as the walk advances. Only `token` (and the para-chain `user.p.X.token`)
-execers are decoded.
+and safe to build as the walk advances.
+
+**Only the execer asked for is decoded** — the main chain's `token` by default. A para chain's
+token is `user.p.<title>.token`, a different dapp that the main chain does not execute: it
+records every one of those transactions as `ExecPack`. They say nothing about the main chain's
+token dapp and are counted under `__other_chain_token_skipped` instead of reported — on bityuan
+they were 180 of 200 hits before this filter. Pass `-execer user.p.<title>.token` to scan a
+para chain's own copy of the chain.
 
 ## Usage
 
@@ -126,6 +132,9 @@ go run ./tools/replayscan token /path/to/datadir/blockchain.db out.jsonl "CHAIN-
 
 # cap the output: stop once the hits reach maxout, so a wide filter cannot fill the disk
 go run ./tools/replayscan addr /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-" 0 100000
+
+# a para chain's own token (default is the main chain's "token")
+go run ./tools/replayscan token /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-" 0 0 -execer user.p.fzmtest.token
 ```
 
 Output is JSON lines, one per candidate:

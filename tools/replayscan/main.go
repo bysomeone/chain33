@@ -240,9 +240,13 @@ func protoInt(msg []byte, field int) (int64, bool) {
 	return 0, false
 }
 
-// isTokenExecer accepts "token" and the para-chain spelling "user.p.<title>.token".
-func isTokenExecer(execer string) bool {
-	return execer == "token" || strings.HasSuffix(execer, ".token")
+// isTokenExecer reports whether the transaction's execer is the one this run was asked for.
+// A para chain's token lives at "user.p.<title>.token", and the main chain does not execute
+// those -- it records every one of them as ExecPack -- so they are not evidence about the
+// main chain's token dapp at all. They were 180 of 200 hits on bityuan, all noise; a run that
+// wants a para chain passes its own execer with -execer.
+func isTokenExecer(execer, wanted string) bool {
+	return execer == wanted
 }
 
 // isAddrCandidate decides whether an address is worth reporting, using the fact that the
@@ -268,8 +272,13 @@ func isAddrCandidate(eStrict, ePermissive error) bool {
 // transactions whose total the bounded CheckAmount would reject. Symbols are unique per
 // chain and a finishCreate always follows its preCreate, so the map is both small and safe
 // to build as the walk advances.
-func tokenScan(emit func(interface{}) error, tx *types.Transaction, height int64, txIndex int, receipt int32, totals map[string]int64, stats map[string]int64) (bool, error) {
-	if !isTokenExecer(string(tx.GetExecer())) {
+func tokenScan(emit func(interface{}) error, tx *types.Transaction, height int64, txIndex int, receipt int32, wanted string, totals map[string]int64, stats map[string]int64) (bool, error) {
+	if !isTokenExecer(string(tx.GetExecer()), wanted) {
+		// Keep the para-chain ones visible as a count rather than dropping them silently: a
+		// run whose count is surprising is a run whose -execer is wrong.
+		if strings.HasSuffix(string(tx.GetExecer()), ".token") {
+			stats["__other_chain_token_skipped"]++
+		}
 		return false, nil
 	}
 	payload := tx.GetPayload()
@@ -313,7 +322,7 @@ func tokenScan(emit func(interface{}) error, tx *types.Transaction, height int64
 }
 
 // scan walks the block bodies in height order and reports the candidates the mode selects.
-func scan(dbPath, outPath, prefix, mode string, limit, maxOut int64) {
+func scan(dbPath, outPath, prefix, mode, tokenExecer string, limit, maxOut int64) {
 	// Pin the enabled set to bityuan's configuration; the registered default is 0 for every
 	// driver, which would accept addresses this chain rejects at low heights.
 	address.Init(&address.Config{
@@ -372,7 +381,7 @@ func scan(dbPath, outPath, prefix, mode string, limit, maxOut int64) {
 
 			if mode == modeToken {
 				var err error
-				pushed, err = tokenScan(emit, tx, body.Height, i, rcpt, totals, stats)
+				pushed, err = tokenScan(emit, tx, body.Height, i, rcpt, tokenExecer, totals, stats)
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "encode:", err)
 					os.Exit(1)
@@ -446,7 +455,8 @@ const (
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: replayscan -dump <db> <prefix>")
 	fmt.Fprintln(os.Stderr, "       replayscan addr  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
-	fmt.Fprintln(os.Stderr, "       replayscan token <db> <out.jsonl> <body-prefix> [limit] [maxout]")
+	fmt.Fprintln(os.Stderr, "       replayscan token <db> <out.jsonl> <body-prefix> [limit] [maxout] [-execer <name>]")
+	fmt.Fprintln(os.Stderr, "  -execer defaults to the main chain's \"token\"; pass user.p.<title>.token to scan a para chain.")
 	os.Exit(2)
 }
 
@@ -455,6 +465,22 @@ func main() {
 		dump(os.Args[2], os.Args[3], 12)
 		return
 	}
+	// -execer is a flag, so pull it out before the positional arguments are read.
+	tokenExecer := "token"
+	args := []string{}
+	for i := 1; i < len(os.Args); i++ {
+		if os.Args[i] == "-execer" {
+			if i+1 >= len(os.Args) {
+				usage()
+			}
+			tokenExecer = os.Args[i+1]
+			i++
+			continue
+		}
+		args = append(args, os.Args[i])
+	}
+	os.Args = append([]string{os.Args[0]}, args...)
+
 	if len(os.Args) < 5 {
 		usage()
 	}
@@ -479,5 +505,5 @@ func main() {
 		}
 		maxOut = v
 	}
-	scan(os.Args[2], os.Args[3], os.Args[4], mode, limit, maxOut)
+	scan(os.Args[2], os.Args[3], os.Args[4], mode, tokenExecer, limit, maxOut)
 }

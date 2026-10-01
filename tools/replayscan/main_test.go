@@ -99,7 +99,7 @@ func TestTokenScanReportsOnlyTotalsPastTheBound(t *testing.T) {
 		emit := func(interface{}) error { emitted++; return nil }
 
 		tx := txFromPayload(t, preCreate("Test Token", "TEST", tc.total))
-		if got, err := tokenScan(emit, tx, 1, 0, 2, totals, stats); err != nil || got {
+		if got, err := tokenScan(emit, tx, 1, 0, 2, "token", totals, stats); err != nil || got {
 			t.Fatalf("%s: preCreate reported a hit (got=%v err=%v)", tc.name, got, err)
 		}
 		if totals["TEST"] != tc.total {
@@ -107,7 +107,7 @@ func TestTokenScanReportsOnlyTotalsPastTheBound(t *testing.T) {
 		}
 
 		fin := txFromPayload(t, finishCreate("TEST", "owner"))
-		got, err := tokenScan(emit, fin, 2, 1, 2, totals, stats)
+		got, err := tokenScan(emit, fin, 2, 1, 2, "token", totals, stats)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -126,8 +126,33 @@ func TestTokenScanIgnoresOtherExecers(t *testing.T) {
 	tx := txFromPayload(t, finishCreate("TEST", "owner"))
 	tx.Execer = []byte("coins")
 
-	if got, _ := tokenScan(func(interface{}) error { return nil }, tx, 1, 0, 2, totals, stats); got {
+	if got, _ := tokenScan(func(interface{}) error { return nil }, tx, 1, 0, 2, "token", totals, stats); got {
 		t.Fatal("a non-token execer was scanned")
+	}
+}
+
+// A para chain's token is a different dapp, and the main chain records every one of its
+// transactions as ExecPack -- on bityuan they were 180 of 200 hits before this filter. They
+// must be skipped, counted, and not silently swallowed.
+func TestTokenScanSkipsParaChainTokens(t *testing.T) {
+	totals := map[string]int64{"TEST": 9e18}
+	stats := map[string]int64{}
+	tx := txFromPayload(t, finishCreate("TEST", "owner"))
+	tx.Execer = []byte("user.p.fzmtest.token")
+	emitted := 0
+
+	got, err := tokenScan(func(interface{}) error { emitted++; return nil }, tx, 1, 0, 1, "token", totals, stats)
+	if err != nil || got || emitted != 0 {
+		t.Fatalf("para-chain token reported (got=%v err=%v emitted=%d)", got, err, emitted)
+	}
+	if stats["__other_chain_token_skipped"] != 1 {
+		t.Fatalf("skip not counted: stats=%v", stats)
+	}
+
+	// The same transaction is the point of the run when the para chain's execer is asked for.
+	got, err = tokenScan(func(interface{}) error { emitted++; return nil }, tx, 1, 0, 1, "user.p.fzmtest.token", totals, stats)
+	if err != nil || !got || emitted != 1 {
+		t.Fatalf("-execer user.p.fzmtest.token did not report it (got=%v err=%v emitted=%d)", got, err, emitted)
 	}
 }
 
