@@ -91,6 +91,17 @@ const rowHeaderLen = 52
 
 const keyPrefixLen = len(bodyRowPrefix)
 
+// p2pstore.db keeps the same block bodies under a second key space, "chunk-" + the height
+// zero-padded to 12 digits (p2pstore/genChunkDBKey), with the BlockBody stored raw -- no table
+// row header. It is worth reading because a shard-enabled node prunes CHAIN-body down to
+// roughly the last 10k heights, while this copy is not pruned.
+const chunkPrefix = "chunk-"
+
+const (
+	srcChainBody = "chainbody" // blockchain.db, CHAIN-body-body-d- rows with a 52-byte header
+	srcP2PStore  = "p2pstore"  // p2pstore.db, chunk-<height> values, raw BlockBody
+)
+
 type addrHit struct {
 	Height  int64  `json:"height"`
 	TxIndex int    `json:"tx_index"`
@@ -124,11 +135,11 @@ func verdictStr(err error) string {
 
 // heightFromKey reads the height zero-padded to 12 digits inside the key, which is more
 // trustworthy than the field inside the value.
-func heightFromKey(key []byte) (int64, bool) {
-	if len(key) < keyPrefixLen+12 {
+func heightFromKey(key []byte, off int) (int64, bool) {
+	if len(key) < off+12 {
 		return 0, false
 	}
-	h, err := strconv.ParseInt(string(key[keyPrefixLen:keyPrefixLen+12]), 10, 64)
+	h, err := strconv.ParseInt(string(key[off:off+12]), 10, 64)
 	if err != nil {
 		return 0, false
 	}
@@ -339,7 +350,7 @@ func tokenScan(emit func(interface{}) error, tx *types.Transaction, height int64
 }
 
 // scan walks the block bodies in height order and reports the candidates the mode selects.
-func scan(dbPath, outPath, prefix, mode, tokenExecer string, limit, maxOut int64) {
+func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut int64) {
 	// Pin the enabled set to bityuan's configuration; the registered default is 0 for every
 	// driver, which would accept addresses this chain rejects at low heights.
 	address.Init(&address.Config{
@@ -363,6 +374,13 @@ func scan(dbPath, outPath, prefix, mode, tokenExecer string, limit, maxOut int64
 	enc := json.NewEncoder(out)
 	emit := func(v interface{}) error { return enc.Encode(v) }
 
+	// A CHAIN-body row carries the table package's 52-byte header; a p2pstore chunk- value is
+	// the raw BlockBody.
+	headerLen, keyOff := rowHeaderLen, keyPrefixLen
+	if src == srcP2PStore {
+		headerLen, keyOff = 0, len(chunkPrefix)
+	}
+
 	iter := db.NewIterator(util.BytesPrefix([]byte(prefix)), nil)
 	defer iter.Release()
 
@@ -374,17 +392,17 @@ func scan(dbPath, outPath, prefix, mode, tokenExecer string, limit, maxOut int64
 
 	for iter.Next() {
 		raw := iter.Value()
-		if len(raw) < rowHeaderLen {
+		if len(raw) < headerLen {
 			stats["__too_short"]++
 			continue
 		}
 		var body types.BlockBody
-		if err := proto.Unmarshal(raw[rowHeaderLen:], &body); err != nil {
+		if err := proto.Unmarshal(raw[headerLen:], &body); err != nil {
 			stats["__unmarshal_failed"]++
 			continue
 		}
 		nRows++
-		if h, ok := heightFromKey(iter.Key()); ok {
+		if h, ok := heightFromKey(iter.Key(), keyOff); ok {
 			body.Height = h
 		}
 		lastHeight = body.Height
@@ -527,6 +545,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       replayscan para  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
 	fmt.Fprintln(os.Stderr, "  para counts paracross transactions per height bucket (density histogram, not hits).")
 	fmt.Fprintln(os.Stderr, "  -execer defaults to the main chain's \"token\"; pass user.p.<title>.token to scan a para chain.")
+	fmt.Fprintln(os.Stderr, "  -src selects the store: chainbody (blockchain.db, default) or p2pstore.")
+	fmt.Fprintln(os.Stderr, "       A shard-enabled node prunes CHAIN-body to ~the last 10k heights, so for older")
+	fmt.Fprintln(os.Stderr, "       history point -src p2pstore at p2pstore.db with prefix \"chunk-\".")
 	os.Exit(2)
 }
 
@@ -535,8 +556,9 @@ func main() {
 		dump(os.Args[2], os.Args[3], 12)
 		return
 	}
-	// -execer is a flag, so pull it out before the positional arguments are read.
+	// -execer and -src are flags, so pull them out before the positional arguments are read.
 	tokenExecer := "token"
+	src := srcChainBody
 	args := []string{}
 	for i := 1; i < len(os.Args); i++ {
 		if os.Args[i] == "-execer" {
@@ -547,9 +569,21 @@ func main() {
 			i++
 			continue
 		}
+		if os.Args[i] == "-src" {
+			if i+1 >= len(os.Args) {
+				usage()
+			}
+			src = os.Args[i+1]
+			i++
+			continue
+		}
 		args = append(args, os.Args[i])
 	}
 	os.Args = append([]string{os.Args[0]}, args...)
+	if src != srcChainBody && src != srcP2PStore {
+		fmt.Fprintln(os.Stderr, "bad -src (want chainbody or p2pstore):", src)
+		os.Exit(2)
+	}
 
 	if len(os.Args) < 5 {
 		usage()
@@ -575,5 +609,5 @@ func main() {
 		}
 		maxOut = v
 	}
-	scan(os.Args[2], os.Args[3], os.Args[4], mode, tokenExecer, limit, maxOut)
+	scan(os.Args[2], os.Args[3], os.Args[4], mode, src, tokenExecer, limit, maxOut)
 }
