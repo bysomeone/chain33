@@ -41,6 +41,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -249,6 +250,22 @@ func isTokenExecer(execer, wanted string) bool {
 	return execer == wanted
 }
 
+// paraCount folds one transaction into the para-mode histogram and reports whether it was a
+// paracross transaction. The match is on substring because a para chain's copy of the
+// executor is namespaced (user.p.<title>.paracross) while the main chain's own is "paracross";
+// both reach the same code that fetches the referenced main-chain block.
+func paraCount(buckets map[int64]map[string]int64, execer string, height int64) bool {
+	if !strings.Contains(execer, "paracross") {
+		return false
+	}
+	b := height / paraBucketSize
+	if buckets[b] == nil {
+		buckets[b] = map[string]int64{}
+	}
+	buckets[b][execer]++
+	return true
+}
+
 // isAddrCandidate decides whether an address is worth reporting, using the fact that the
 // enabled driver set only grows with height. Two kinds can flip, and both are kept:
 //
@@ -353,6 +370,7 @@ func scan(dbPath, outPath, prefix, mode, tokenExecer string, limit, maxOut int64
 	var lastHeight int64
 	stats := map[string]int64{}
 	totals := map[string]int64{}
+	paraBuckets := map[int64]map[string]int64{}
 
 	for iter.Next() {
 		raw := iter.Value()
@@ -379,14 +397,21 @@ func scan(dbPath, outPath, prefix, mode, tokenExecer string, limit, maxOut int64
 			}
 			pushed := false
 
-			if mode == modeToken {
+			switch {
+			case mode == modeToken:
 				var err error
 				pushed, err = tokenScan(emit, tx, body.Height, i, rcpt, tokenExecer, totals, stats)
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "encode:", err)
 					os.Exit(1)
 				}
-			} else {
+			case mode == modePara:
+				// Executing a paracross Commit tx makes the node fetch the main-chain block
+				// named by status.MainBlockHash, which on a shard node is a p2pstore round
+				// trip. Count those transactions per height band so the cost curve can be
+				// compared against an observed sync rate.
+				pushed = paraCount(paraBuckets, string(tx.GetExecer()), body.Height)
+			default:
 				to := tx.GetTo()
 				if to == "" {
 					continue
@@ -445,17 +470,62 @@ func scan(dbPath, outPath, prefix, mode, tokenExecer string, limit, maxOut int64
 	for k, v := range stats {
 		fmt.Fprintf(os.Stderr, "  %-28s %d\n", k, v)
 	}
+
+	// The histogram is small and bounded by the height range, so it is written once at the
+	// end rather than streamed per hit -- output size does not depend on the data.
+	if mode == modePara {
+		keys := make([]int64, 0, len(paraBuckets))
+		for b := range paraBuckets {
+			keys = append(keys, b)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+		for _, b := range keys {
+			execers := make([]string, 0, len(paraBuckets[b]))
+			for ex := range paraBuckets[b] {
+				execers = append(execers, ex)
+			}
+			sort.Strings(execers)
+			for _, ex := range execers {
+				if err := enc.Encode(paraBucket{
+					Bucket: b,
+					From:   b * paraBucketSize,
+					To:     b*paraBucketSize + paraBucketSize - 1,
+					Execer: ex,
+					Count:  paraBuckets[b][ex],
+				}); err != nil {
+					fmt.Fprintln(os.Stderr, "encode:", err)
+					os.Exit(1)
+				}
+			}
+		}
+	}
 }
 
 const (
 	modeAddr  = "addr"
 	modeToken = "token"
+	modePara  = "para"
 )
+
+// paraBucketSize is the height width of one histogram row in para mode.
+const paraBucketSize = int64(100000)
+
+// paraBucket is one row of the para-mode density histogram: how many paracross
+// transactions sit in [From, To]. Emitted one JSON line per (bucket, execer).
+type paraBucket struct {
+	Bucket int64  `json:"bucket"`
+	From   int64  `json:"height_from"`
+	To     int64  `json:"height_to"`
+	Execer string `json:"execer"`
+	Count  int64  `json:"count"`
+}
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: replayscan -dump <db> <prefix>")
 	fmt.Fprintln(os.Stderr, "       replayscan addr  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
 	fmt.Fprintln(os.Stderr, "       replayscan token <db> <out.jsonl> <body-prefix> [limit] [maxout] [-execer <name>]")
+	fmt.Fprintln(os.Stderr, "       replayscan para  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
+	fmt.Fprintln(os.Stderr, "  para counts paracross transactions per height bucket (density histogram, not hits).")
 	fmt.Fprintln(os.Stderr, "  -execer defaults to the main chain's \"token\"; pass user.p.<title>.token to scan a para chain.")
 	os.Exit(2)
 }
@@ -485,7 +555,7 @@ func main() {
 		usage()
 	}
 	mode := os.Args[1]
-	if mode != modeAddr && mode != modeToken {
+	if mode != modeAddr && mode != modeToken && mode != modePara {
 		usage()
 	}
 	var limit, maxOut int64

@@ -135,7 +135,22 @@ go run ./tools/replayscan addr /path/to/datadir/blockchain.db out.jsonl "CHAIN-b
 
 # a para chain's own token (default is the main chain's "token")
 go run ./tools/replayscan token /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-" 0 0 -execer user.p.fzmtest.token
+
+# paracross transaction density per 100k heights (histogram, not hits)
+go run ./tools/replayscan para /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-"
 ```
+
+`para` mode exists because executing a paracross `Commit` transaction makes the node read the
+main-chain block named by `status.MainBlockHash`, and on a shard node that block body is not
+local — the read becomes a p2pstore round trip (see `getCrossTxsByRst` in the paracross
+executor, and `getBodyFromP2Pstore` in `blockchain/blockstore.go`). The histogram is what an
+observed sync rate can be plotted against.
+
+**It needs a datadir whose block bodies have not been pruned.** A node with sharding enabled
+deletes `CHAIN-body` rows for everything older than roughly `MaxRollBlockNum + ChunkblockNum *
+DelRollbackChunkNum` heights below its tip (~10k with the stock `ChunkblockNum = 1`), so such
+a datadir only yields a histogram for its most recent window — check the first key under the
+prefix with `-dump` before trusting a run.
 
 Output is JSON lines, one per candidate:
 

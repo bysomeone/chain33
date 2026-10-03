@@ -156,6 +156,53 @@ func TestTokenScanSkipsParaChainTokens(t *testing.T) {
 	}
 }
 
+// para mode is a density histogram, so what matters is which transactions land in which
+// height bucket. Both the main chain's own paracross and a para chain's namespaced copy
+// reach the same block-fetching code, so both must be counted.
+func TestParaCountBucketsByHeight(t *testing.T) {
+	buckets := map[int64]map[string]int64{}
+
+	// want bucket is which 100k band the height must land in; -1 means "not paracross".
+	cases := []struct {
+		execer string
+		height int64
+		want   int64
+	}{
+		{"paracross", 1, 0},
+		{"user.p.bscdex.paracross", 18473244, 184},
+		{"paracross", 18499999, 184},
+		{"paracross", 18500000, 185}, // exactly the band boundary
+		{"paracross", 0, 0},
+		{"coins", 18473244, -1},
+		{"token", 18473244, -1},
+		{"", 18473244, -1},
+	}
+	for _, tc := range cases {
+		got := paraCount(buckets, tc.execer, tc.height)
+		if want := tc.want >= 0; got != want {
+			t.Fatalf("paraCount(%q, %d) = %v, want %v", tc.execer, tc.height, got, want)
+		}
+	}
+
+	if got := buckets[0]["paracross"]; got != 2 {
+		t.Fatalf("bucket 0 paracross = %d, want 2 (heights 0 and 1)", got)
+	}
+	if got := buckets[184]["user.p.bscdex.paracross"]; got != 1 {
+		t.Fatalf("bucket 184 para count = %d, want 1", got)
+	}
+	// The para chain's copy and the main chain's own executor are different keys, so a
+	// bucket's total is the sum over execers, not one number.
+	if got := buckets[184]["paracross"]; got != 1 {
+		t.Fatalf("bucket 184 paracross = %d, want 1 (18499999 only)", got)
+	}
+	if got := buckets[185]["paracross"]; got != 1 {
+		t.Fatalf("bucket 185 paracross = %d, want 1", got)
+	}
+	if len(buckets) != 3 {
+		t.Fatalf("buckets = %d, want 3 (0, 184, 185)", len(buckets))
+	}
+}
+
 func b2i(b bool) int {
 	if b {
 		return 1
