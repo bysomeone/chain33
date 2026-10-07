@@ -174,6 +174,70 @@ func dump(dbPath, prefix string, n int) {
 	fmt.Fprintf(os.Stderr, "dumped %d keys under prefix %q\n", count, prefix)
 }
 
+// prefixSizes walks the whole database and groups keys by their leading table name, so "what is
+// actually taking the space" comes from the store itself rather than from assuming which tables
+// dominate. Values are counted as stored; key bytes are reported separately.
+func prefixSizes(dbPath string) {
+	db := open(dbPath)
+	defer db.Close()
+
+	type stat struct{ keys, kbytes, vbytes int64 }
+	sizes := map[string]*stat{}
+	var totalKeys, totalBytes int64
+
+	iter := db.NewIterator(nil, nil)
+	defer iter.Release()
+	for iter.Next() {
+		name := leadingTable(iter.Key())
+		s := sizes[name]
+		if s == nil {
+			s = &stat{}
+			sizes[name] = s
+		}
+		s.keys++
+		s.kbytes += int64(len(iter.Key()))
+		s.vbytes += int64(len(iter.Value()))
+		totalKeys++
+		totalBytes += int64(len(iter.Key())) + int64(len(iter.Value()))
+	}
+	if err := iter.Error(); err != nil {
+		fmt.Fprintf(os.Stderr, "iteration stopped after %d keys: %v\n", totalKeys, err)
+	}
+
+	names := make([]string, 0, len(sizes))
+	for n := range sizes {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return sizes[names[i]].vbytes > sizes[names[j]].vbytes })
+
+	fmt.Printf("%-30s %16s %16s %14s\n", "table", "value bytes", "key bytes", "keys")
+	for _, n := range names {
+		s := sizes[n]
+		fmt.Printf("%-30s %16d %16d %14d\n", n, s.vbytes, s.kbytes, s.keys)
+	}
+	fmt.Printf("%-30s %16d %16d %14d\n", "TOTAL(keys+values)", totalBytes, 0, totalKeys)
+	fmt.Fprintf(os.Stderr, "walked %d keys, %d bytes\n", totalKeys, totalBytes)
+}
+
+// leadingTable returns the ASCII table name at the start of a key. chain33 puts the table name
+// first and then either ASCII digits (heights) or a hash, so stopping at the first byte that is
+// neither a letter nor one of "-_." yields the table and nothing else.
+func leadingTable(k []byte) string {
+	i := 0
+	for i < len(k) {
+		c := k[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.' {
+			i++
+			continue
+		}
+		break
+	}
+	if i == 0 {
+		return fmt.Sprintf("(binary %x)", head(k, 8))
+	}
+	return string(k[:i])
+}
+
 func head(b []byte, n int) []byte {
 	if len(b) < n {
 		return b
@@ -227,6 +291,91 @@ func protoString(msg []byte, field int) (string, bool) {
 		msg = msg[n2:]
 	}
 	return "", false
+}
+
+// protoBytes returns the raw bytes of a length-delimited field.
+func protoBytes(msg []byte, field int) ([]byte, bool) {
+	for len(msg) > 0 {
+		num, typ, n := protowire.ConsumeTag(msg)
+		if n < 0 {
+			return nil, false
+		}
+		msg = msg[n:]
+		if int(num) == field && typ == protowire.BytesType {
+			v, n2 := protowire.ConsumeBytes(msg)
+			if n2 < 0 {
+				return nil, false
+			}
+			return v, true
+		}
+		n2 := protowire.ConsumeFieldValue(num, typ, msg)
+		if n2 < 0 {
+			return nil, false
+		}
+		msg = msg[n2:]
+	}
+	return nil, false
+}
+
+// Field numbers from plugin/dapp/paracross/types/paracross.pb.go. ParacrossAction is a oneof
+// whose Commit arm is field 1; ParacrossCommitAction carries Status at field 1; and
+// ParacrossNodeStatus carries MainBlockHeight at 2, Title at 3 and CrossTxResult at 12.
+const (
+	paraActionCommit          = 1
+	paraActionTy              = 2
+	paraCommitStatus          = 1
+	paraStatusMainBlockHeight = 2
+	paraStatusTitle           = 3
+	paraStatusCrossTxResult   = 12
+)
+
+// paracrossTy reads ParacrossAction.Ty, which is what decides whether a .paracross transaction
+// does any work: execCrossTxNew only acts on the asset-transfer values and returns early for
+// everything else. It still has to decode the payload to find that out, which is why the bytes
+// of every .paracross transaction are currently read even though most are consensus commits.
+func paracrossTy(payload []byte) (int64, bool) { return protoInt(payload, paraActionTy) }
+
+// Cross-chain asset-transfer Ty values, per FilterParaCrossAssetTxHashes. 10002-10004 are
+// deliberately excluded by that function's own comment.
+const (
+	tyAssetTransfer      = 10000
+	tyAssetWithdraw      = 10001
+	tyCrossAssetTransfer = 10005
+)
+
+// isAssetTransferTy reports whether a transaction is one execCrossTxNew would act on.
+func isAssetTransferTy(ty int64) bool {
+	return ty == tyAssetTransfer || ty == tyAssetWithdraw || ty >= tyCrossAssetTransfer
+}
+
+// paraCrossStatusBitMapVerLen mirrors pt.ParaCrossStatusBitMapVerLen. A CrossTxResult of
+// exactly this length means "version marker, no cross-chain asset transfers", which is what
+// lets getCrossTxsByRst return before reading the referenced main-chain block. Any other
+// length is a commit that will read that block.
+const paraCrossStatusBitMapVerLen = 4
+
+// paracrossCommit decodes the anchor a paracross Commit transaction points at.
+//
+// The anchor is the main-chain block the para chain built that block from
+// (paracreate.go getNewBlock: MainHeight = mainBlock.Header.Height). A para chain that is
+// still catching up on main-chain sequencing therefore commits against an older main height
+// than the one its transaction ends up sitting in.
+func paracrossCommit(payload []byte) (anchor int64, title string, crossLen int, ok bool) {
+	commit, ok := protoBytes(payload, paraActionCommit)
+	if !ok {
+		return 0, "", 0, false
+	}
+	status, ok := protoBytes(commit, paraCommitStatus)
+	if !ok {
+		return 0, "", 0, false
+	}
+	anchor, ok = protoInt(status, paraStatusMainBlockHeight)
+	if !ok {
+		return 0, "", 0, false
+	}
+	title, _ = protoString(status, paraStatusTitle)
+	cross, _ := protoBytes(status, paraStatusCrossTxResult)
+	return anchor, title, len(cross), true
 }
 
 func protoInt(msg []byte, field int) (int64, bool) {
@@ -389,6 +538,8 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut 
 	stats := map[string]int64{}
 	totals := map[string]int64{}
 	paraBuckets := map[int64]map[string]int64{}
+	anchors := map[anchorKey]*anchorRow{}
+	var sz sizeStat
 
 	for iter.Next() {
 		raw := iter.Value()
@@ -429,7 +580,38 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut 
 				// trip. Count those transactions per height band so the cost curve can be
 				// compared against an observed sync rate.
 				pushed = paraCount(paraBuckets, string(tx.GetExecer()), body.Height)
-			default:
+			case mode == modeAnchor:
+				// Same cost, but resolved per commit: which main-chain height it points at,
+				// and whether its bitmap says a fetch will happen at all.
+				if !strings.Contains(string(tx.GetExecer()), "paracross") {
+					continue
+				}
+				anchor, title, crossLen, ok := paracrossCommit(tx.GetPayload())
+				if !ok {
+					stats["__anchor_decode_failed"]++
+					continue
+				}
+				k := anchorKey{band: body.Height / paraBucketSize, title: title}
+				row := anchors[k]
+				if row == nil {
+					row = &anchorRow{Band: k.band, HeightFrom: k.band * paraBucketSize,
+						HeightTo: k.band*paraBucketSize + paraBucketSize - 1, Title: title}
+					anchors[k] = row
+				}
+				row.Commits++
+				if crossLen != paraCrossStatusBitMapVerLen {
+					row.WouldFetch++
+				}
+				if row.AnchorMin == 0 || anchor < row.AnchorMin {
+					row.AnchorMin = anchor
+				}
+				if anchor > row.AnchorMax {
+					row.AnchorMax = anchor
+				}
+				pushed = true
+			case mode == modeSize:
+				// Nothing per transaction; modeSize is accounted per block, after this loop.
+			case mode == modeAddr:
 				to := tx.GetTo()
 				if to == "" {
 					continue
@@ -466,6 +648,51 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut 
 			}
 		}
 
+		if mode == modeSize {
+			// What would a dedicated paracross index cost, against the bodies it replaces?
+			// This is block-level: counting it inside the per-transaction loop below would
+			// multiply every figure by the block's transaction count.
+			sz.Bodies++
+			sz.BodyBytes += int64(len(raw))
+			sz.AllTxCount += int64(len(body.Txs))
+			var inPara bool
+			for _, tx := range body.Txs {
+				ex := string(tx.GetExecer())
+				if !isParaExec(ex) {
+					continue
+				}
+				inPara = true
+				// proto.Size walks the fields without allocating; types.Encode marshals into a
+				// fresh buffer per transaction, which is what made this mode crawl.
+				n := int64(proto.Size(tx))
+				sz.ParaTxCount++
+				sz.ParaTxBytes += n
+				if isCrossExec(ex) {
+					sz.CrossTxCount++
+					sz.CrossTxBytes += n
+					ty, ok := paracrossTy(tx.GetPayload())
+					if !ok {
+						stats["__ty_decode_failed"]++
+					} else {
+						if sz.CrossByTyCount == nil {
+							sz.CrossByTyCount = map[string]int64{}
+							sz.CrossByTyBytes = map[string]int64{}
+						}
+						k := strconv.FormatInt(ty, 10)
+						sz.CrossByTyCount[k]++
+						sz.CrossByTyBytes[k] += n
+						if isAssetTransferTy(ty) {
+							sz.AssetTxCount++
+							sz.AssetTxBytes += n
+						}
+					}
+				}
+			}
+			if inPara {
+				sz.ParaBlocks++
+			}
+		}
+
 		if nRows%100000 == 0 {
 			fmt.Fprintf(os.Stderr, "progress rows=%d txs=%d hits=%d height=%d\n", nRows, nTxs, nHits, body.Height)
 		}
@@ -487,6 +714,32 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut 
 	fmt.Fprintf(os.Stderr, "done mode=%s rows=%d txs=%d hits=%d lastHeight=%d\n", mode, nRows, nTxs, nHits, lastHeight)
 	for k, v := range stats {
 		fmt.Fprintf(os.Stderr, "  %-28s %d\n", k, v)
+	}
+
+	if mode == modeSize {
+		if err := enc.Encode(sz); err != nil {
+			fmt.Fprintln(os.Stderr, "encode:", err)
+			os.Exit(1)
+		}
+	}
+
+	if mode == modeAnchor {
+		rows := make([]*anchorRow, 0, len(anchors))
+		for _, r := range anchors {
+			rows = append(rows, r)
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].Band != rows[j].Band {
+				return rows[i].Band < rows[j].Band
+			}
+			return rows[i].Title < rows[j].Title
+		})
+		for _, r := range rows {
+			if err := enc.Encode(r); err != nil {
+				fmt.Fprintln(os.Stderr, "encode:", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	// The histogram is small and bounded by the height range, so it is written once at the
@@ -520,10 +773,62 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut 
 }
 
 const (
-	modeAddr  = "addr"
-	modeToken = "token"
-	modePara  = "para"
+	modeAddr   = "addr"
+	modeToken  = "token"
+	modePara   = "para"
+	modeAnchor = "anchor"
+	modeSize   = "size"
 )
+
+// sizeStat measures how much of the block-body store a paracross index would have to hold.
+// It exists to size the proposal in the issue: instead of keeping whole block bodies so that
+// paracross can read the few transactions it needs, keep just those transactions.
+type sizeStat struct {
+	Bodies       int64 `json:"bodies"`
+	BodyBytes    int64 `json:"body_bytes"`
+	ParaBlocks   int64 `json:"blocks_with_para_txs"`
+	ParaTxCount  int64 `json:"para_tx_count"`
+	ParaTxBytes  int64 `json:"para_tx_bytes"`
+	CrossTxCount int64 `json:"cross_tx_count"`
+	CrossTxBytes int64 `json:"cross_tx_bytes"`
+	AllTxCount   int64 `json:"all_tx_count"`
+
+	// Breakdown of the .paracross set by ParacrossAction.Ty. Only the asset-transfer values are
+	// acted on by execCrossTxNew; the rest still have their payload decoded, but their bytes
+	// could be replaced by the Ty alone if the index carried it.
+	CrossByTyCount map[string]int64 `json:"cross_count_by_ty"`
+	CrossByTyBytes map[string]int64 `json:"cross_bytes_by_ty"`
+	AssetTxCount   int64            `json:"asset_tx_count"`
+	AssetTxBytes   int64            `json:"asset_tx_bytes"`
+}
+
+// isParaExec reports whether an execer names a para chain (user.p.<title>.<execer>).
+func isParaExec(execer string) bool { return strings.HasPrefix(execer, "user.p.") }
+
+// isCrossExec reports whether the transaction is one FilterParaCrossTxs would return: a para
+// transaction whose execer ends in ".paracross".
+func isCrossExec(execer string) bool {
+	return isParaExec(execer) && strings.HasSuffix(execer, ".paracross")
+}
+
+// anchorKey groups the anchor histogram by the band a commit sits in and its para chain.
+type anchorKey struct {
+	band  int64
+	title string
+}
+
+// anchorRow is one row of the anchor histogram: paracross Commit transactions that sit in
+// [HeightFrom, HeightTo], grouped by para chain, with the main-chain heights they point at.
+type anchorRow struct {
+	Band       int64  `json:"band"`
+	HeightFrom int64  `json:"height_from"`
+	HeightTo   int64  `json:"height_to"`
+	Title      string `json:"title"`
+	Commits    int64  `json:"commits"`
+	WouldFetch int64  `json:"would_fetch"`
+	AnchorMin  int64  `json:"anchor_min"`
+	AnchorMax  int64  `json:"anchor_max"`
+}
 
 // paraBucketSize is the height width of one histogram row in para mode.
 const paraBucketSize = int64(100000)
@@ -543,7 +848,12 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       replayscan addr  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
 	fmt.Fprintln(os.Stderr, "       replayscan token <db> <out.jsonl> <body-prefix> [limit] [maxout] [-execer <name>]")
 	fmt.Fprintln(os.Stderr, "       replayscan para  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
+	fmt.Fprintln(os.Stderr, "       replayscan anchor <db> <out.jsonl> <body-prefix> [limit] [maxout]")
+	fmt.Fprintln(os.Stderr, "       replayscan size  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
 	fmt.Fprintln(os.Stderr, "  para counts paracross transactions per height bucket (density histogram, not hits).")
+	fmt.Fprintln(os.Stderr, "  size measures how much of the body store a paracross index would have to hold.")
+	fmt.Fprintln(os.Stderr, "  anchor resolves each paracross Commit to the main-chain height it points at, and")
+	fmt.Fprintln(os.Stderr, "       whether its bitmap says that block will be read. Histogram, not per-tx output.")
 	fmt.Fprintln(os.Stderr, "  -execer defaults to the main chain's \"token\"; pass user.p.<title>.token to scan a para chain.")
 	fmt.Fprintln(os.Stderr, "  -src selects the store: chainbody (blockchain.db, default) or p2pstore.")
 	fmt.Fprintln(os.Stderr, "       A shard-enabled node prunes CHAIN-body to ~the last 10k heights, so for older")
@@ -554,6 +864,10 @@ func usage() {
 func main() {
 	if len(os.Args) >= 4 && os.Args[1] == "-dump" {
 		dump(os.Args[2], os.Args[3], 12)
+		return
+	}
+	if len(os.Args) >= 3 && os.Args[1] == "prefixes" {
+		prefixSizes(os.Args[2])
 		return
 	}
 	// -execer and -src are flags, so pull them out before the positional arguments are read.
@@ -589,7 +903,7 @@ func main() {
 		usage()
 	}
 	mode := os.Args[1]
-	if mode != modeAddr && mode != modeToken && mode != modePara {
+	if mode != modeAddr && mode != modeToken && mode != modePara && mode != modeAnchor && mode != modeSize {
 		usage()
 	}
 	var limit, maxOut int64

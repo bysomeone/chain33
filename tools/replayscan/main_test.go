@@ -156,6 +156,53 @@ func TestTokenScanSkipsParaChainTokens(t *testing.T) {
 	}
 }
 
+func rawBytes(payload []byte, field int, v []byte) []byte {
+	payload = protowire.AppendTag(payload, protowire.Number(field), protowire.BytesType)
+	return protowire.AppendBytes(payload, v)
+}
+
+// A paracross Commit transaction carries the main-chain block it is anchored to in its own
+// payload, which is what makes the set of blocks a block will need known before it executes.
+func paracrossCommitPayload(title string, mainHeight int64, cross []byte) []byte {
+	var status []byte
+	status = i64(status, 2, mainHeight) // ParacrossNodeStatus.mainBlockHeight
+	status = str(status, 3, title)      // .title
+	if cross != nil {
+		status = rawBytes(status, 12, cross) // .crossTxResult
+	}
+	var commit []byte
+	commit = rawBytes(commit, 1, status) // ParacrossCommitAction.status
+	return arm(1, commit)                // ParacrossAction.commit
+}
+
+func TestParacrossCommitDecodesTheAnchor(t *testing.T) {
+	// A 4-byte CrossTxResult is the "no cross-chain asset transfers" version marker; that is
+	// the length at which getCrossTxsByRst returns before reading the referenced block.
+	anchor, title, crossLen, ok := paracrossCommit(
+		paracrossCommitPayload("bscdex", 12500000, []byte("0001")))
+	if !ok || anchor != 12500000 || title != "bscdex" || crossLen != 4 {
+		t.Fatalf("anchor=%d title=%q crossLen=%d ok=%v, want 12500000/bscdex/4/true",
+			anchor, title, crossLen, ok)
+	}
+
+	_, _, crossLen, ok = paracrossCommit(
+		paracrossCommitPayload("mc", 14336731, []byte("0001\x01\x02\x03")))
+	if !ok || crossLen != 7 {
+		t.Fatalf("a bitmap longer than the version marker must report that length (got %d, ok=%v)", crossLen, ok)
+	}
+
+	// Not a paracross action at all.
+	if _, _, _, ok := paracrossCommit([]byte{0x08, 0x01}); ok {
+		t.Fatal("a plain varint field was read as a paracross commit")
+	}
+	// A status without the anchor field cannot be resolved.
+	var commit []byte
+	commit = rawBytes(commit, 1, str(nil, 3, "bscdex"))
+	if _, _, _, ok := paracrossCommit(arm(1, commit)); ok {
+		t.Fatal("a status with no mainBlockHeight was reported as decoded")
+	}
+}
+
 // para mode is a density histogram, so what matters is which transactions land in which
 // height bucket. Both the main chain's own paracross and a para chain's namespaced copy
 // reach the same block-fetching code, so both must be counted.
@@ -200,6 +247,74 @@ func TestParaCountBucketsByHeight(t *testing.T) {
 	}
 	if len(buckets) != 3 {
 		t.Fatalf("buckets = %d, want 3 (0, 184, 185)", len(buckets))
+	}
+}
+
+// size mode classifies para transactions twice over: user.p.<title>.<execer> is a para tx, and
+// the subset whose execer ends in .paracross is what FilterParaCrossTxs would return. The main
+// chain's own "paracross" executor has no user.p. prefix and belongs to no title, so it must
+// not be counted -- it is not reachable from getCrossTxsByRst.
+func TestParaAndCrossExecClassification(t *testing.T) {
+	cases := []struct {
+		execer      string
+		para, cross bool
+	}{
+		{"user.p.mc.paracross", true, true},
+		{"user.p.bscdex.paracross", true, true},
+		{"user.p.HonorDecentchain.paracross", true, true},
+		{"user.p.mc.coins", true, false},
+		{"user.p.mc.token", true, false},
+		{"paracross", false, false}, // the main chain's own executor
+		{"coins", false, false},
+		{"", false, false},
+		{"user.p.", true, false},
+	}
+	for _, tc := range cases {
+		if got := isParaExec(tc.execer); got != tc.para {
+			t.Fatalf("isParaExec(%q) = %v, want %v", tc.execer, got, tc.para)
+		}
+		if got := isCrossExec(tc.execer); got != tc.cross {
+			t.Fatalf("isCrossExec(%q) = %v, want %v", tc.execer, got, tc.cross)
+		}
+	}
+}
+
+// Ty decides whether execCrossTxNew does any work, and it is the reason the bytes of a
+// .paracross transaction are currently read at all -- the payload has to be decoded to learn
+// that a Commit is not an asset transfer. 10002-10004 are excluded on purpose: the enum's own
+// comment says NodeConfig/NodeGroupApply/SelfStageConfig are not asset transfers.
+func TestParacrossTyClassification(t *testing.T) {
+	payload := arm(1, i64(nil, 2, 12500000)) // commit arm
+	payload = i64(payload, paraActionTy, 0)  // ParacrossActionCommit
+	ty, ok := paracrossTy(payload)
+	if !ok || ty != 0 {
+		t.Fatalf("ty=%d ok=%v, want 0/true", ty, ok)
+	}
+	if isAssetTransferTy(ty) {
+		t.Fatal("Commit must not be classified as an asset transfer")
+	}
+
+	for _, tc := range []struct {
+		ty   int64
+		want bool
+	}{
+		{0, false},     // Commit
+		{2, false},     // Transfer
+		{10000, true},  // AssetTransfer
+		{10001, true},  // AssetWithdraw
+		{10002, false}, // NodeConfig
+		{10003, false}, // NodeGroupApply
+		{10004, false}, // SelfStageConfig
+		{10005, true},  // CrossAssetTransfer
+		{10006, true},  // anything above CrossAssetTransfer
+	} {
+		if got := isAssetTransferTy(tc.ty); got != tc.want {
+			t.Fatalf("isAssetTransferTy(%d) = %v, want %v", tc.ty, got, tc.want)
+		}
+	}
+
+	if _, ok := paracrossTy([]byte{0x08, 0x01}); ok {
+		t.Fatal("a payload with no Ty field was reported as decoded")
 	}
 }
 
