@@ -819,6 +819,36 @@ func (_m *QueueProtocolAPI) GetParaTxByHeight(param *types.ReqParaTxByHeight) (*
 	return r0, r1
 }
 
+// GetParaTxIndex provides a mock function with given fields: param
+func (_m *QueueProtocolAPI) GetParaTxIndex(param *types.ReqParaTxIndex) (*types.HeightParaIndex, error) {
+	ret := _m.Called(param)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetParaTxIndex")
+	}
+
+	var r0 *types.HeightParaIndex
+	var r1 error
+	if rf, ok := ret.Get(0).(func(*types.ReqParaTxIndex) (*types.HeightParaIndex, error)); ok {
+		return rf(param)
+	}
+	if rf, ok := ret.Get(0).(func(*types.ReqParaTxIndex) *types.HeightParaIndex); ok {
+		r0 = rf(param)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*types.HeightParaIndex)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(*types.ReqParaTxIndex) error); ok {
+		r1 = rf(param)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetParaTxByTitle provides a mock function with given fields: param
 func (_m *QueueProtocolAPI) GetParaTxByTitle(param *types.ReqParaTxByTitle) (*types.ParaTxDetails, error) {
 	ret := _m.Called(param)

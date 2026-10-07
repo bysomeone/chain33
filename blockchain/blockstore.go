@@ -648,6 +648,13 @@ func (bs *BlockStore) DelBlock(storeBatch dbm.Batch, blockdetail *types.BlockDet
 				storeBatch.Delete(kv.GetKey())
 			}
 		}
+		// 索引必须和区块一起删除, 否则回滚后重新执行同一高度会读到过期的索引
+		indexkvs, _ := delParaTxIndexTable(bs.db, height)
+		for _, kv := range indexkvs {
+			if len(kv.GetKey()) != 0 && kv.GetValue() == nil {
+				storeBatch.Delete(kv.GetKey())
+			}
+		}
 	}
 	storeLog.Debug("DelBlock success", "blockheight", height, "hash", common.ToHex(hash))
 	return lastSequence, nil
@@ -1432,6 +1439,17 @@ func (bs *BlockStore) saveBlockForTable(storeBatch dbm.Batch, blockdetail *types
 			return err
 		}
 		for _, kv := range paratxkvs {
+			storeBatch.Set(kv.GetKey(), kv.GetValue())
+		}
+
+		//平行链跨链交易索引, 由插件注册的builder构建, 未注册builder时不产生任何数据
+		//该索引只用于加速跨链交易执行, 缺失或写入失败都会回退到读取区块体,
+		//因此这里不返回错误, 以免影响区块本身的保存
+		indexkvs, err := saveParaTxIndexForBlock(cfg, bs.db, blockdetail)
+		if err != nil {
+			storeLog.Error("SaveBlock:saveParaTxIndexForBlock", "height", height, "hash", common.ToHex(hash), "err", err)
+		}
+		for _, kv := range indexkvs {
 			storeBatch.Set(kv.GetKey(), kv.GetValue())
 		}
 	}

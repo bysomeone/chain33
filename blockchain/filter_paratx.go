@@ -153,6 +153,16 @@ func (chain *BlockChain) GetParaTxByHeight(req *types.ReqParaTxByHeight) (*types
 	return &paraTxs, nil
 }
 
+// GetParaTxIndex 通过height和title获取平行链跨链交易索引
+// 索引由注册的ParaTxIndexBuilder在区块保存时写入, 未注册时始终返回ErrNotFound,
+// 调用方需要回退到读取区块体的方式
+func (chain *BlockChain) GetParaTxIndex(req *types.ReqParaTxIndex) (*types.HeightParaIndex, error) {
+	if req == nil || req.Height < 0 || !strings.HasPrefix(req.Title, types.ParaKeyX) {
+		return nil, types.ErrInvalidParam
+	}
+	return getParaTxIndex(chain.blockStore.db, req.Height, req.Title)
+}
+
 // 获取指定title子链roothash在指定高度上的路径证明
 func (chain *BlockChain) getChildChainProofs(height int64, blockHash []byte, title string, txs []*types.Transaction) ([][]byte, []byte, uint32) {
 	var branch [][]byte

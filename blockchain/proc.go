@@ -105,6 +105,10 @@ func (chain *BlockChain) ProcRecvMsg() {
 			//通过区块高度列表+title获取平行链交易
 		case types.EventGetParaTxByTitleAndHeight:
 			go chain.processMsg(msg, reqnum, chain.getParaTxByTitleAndHeight)
+
+			//通过区块高度和title获取平行链跨链交易索引
+		case types.EventGetParaTxIndex:
+			go chain.processMsg(msg, reqnum, chain.getParaTxIndex)
 			// 获取chunk record
 		case types.EventGetChunkRecord:
 			go chain.processMsg(msg, reqnum, chain.getChunkRecord)
@@ -627,6 +631,19 @@ func (chain *BlockChain) getParaTxByTitle(msg *queue.Message) {
 		return
 	}
 	msg.Reply(chain.client.NewMessage("", types.EventReplyParaTxByTitle, reply))
+}
+
+// getParaTxIndex //通过区块高度和title获取平行链跨链交易索引
+func (chain *BlockChain) getParaTxIndex(msg *queue.Message) {
+	req := (msg.Data).(*types.ReqParaTxIndex)
+	reply, err := chain.GetParaTxIndex(req)
+	if err != nil {
+		//索引缺失是正常的, 调用方会回退到读取区块体, 只记debug日志
+		chainlog.Debug("getParaTxIndex", "req", req, "err", err.Error())
+		msg.Reply(chain.client.NewMessage("", types.EventReplyParaTxIndex, err))
+		return
+	}
+	msg.Reply(chain.client.NewMessage("", types.EventReplyParaTxIndex, reply))
 }
 
 // getHeightByTitle //获取拥有此title交易的区块高度

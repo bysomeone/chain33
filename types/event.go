@@ -173,6 +173,10 @@ const (
 	// 添加ChunkRecord
 	EventAddChunkRecord = 318
 
+	//通过区块高度和title获取平行链跨链交易索引
+	EventGetParaTxIndex   = 319
+	EventReplyParaTxIndex = 320
+
 	//p2p 其他接收事件
 	EventSubTopic       = 350
 	EventPubTopicMsg    = 351
@@ -375,6 +379,7 @@ var eventName = map[int]string{
 	EventGetChunkBlockBody:          "EventGetChunkBlockBody",
 	EventGetChunkRecord:             "EventGetChunkRecord",
 	EventAddChunkRecord:             "EventAddChunkRecord",
+	EventGetParaTxIndex:             "EventGetParaTxIndex",
 	EventSubTopic:                   "EventSubTopic",
 	EventPubTopicMsg:                "EventPubTopicMsg",
 	EventFetchTopics:                "EventFetchTopics",

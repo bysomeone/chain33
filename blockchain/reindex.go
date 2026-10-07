@@ -192,6 +192,13 @@ func (chain *BlockChain) reIndexForTableOne(index int64, lastindex int64, isSeq 
 				newbatch.Delete(kv.GetKey())
 			}
 		}
+		// 重索引会重新执行区块, 旧索引必须一并删除, 否则会读到和新区块不一致的索引
+		delIndexKvs, _ := delParaTxIndexTable(chain.blockStore.db, height)
+		for _, kv := range delIndexKvs {
+			if len(kv.GetKey()) != 0 && kv.GetValue() == nil {
+				newbatch.Delete(kv.GetKey())
+			}
+		}
 		// 精简localdb，为了提升效率，所有索引tx均生成，而不从数据库中读取，因此需要删除侧链生成的tx
 		if chain.client.GetConfig().IsEnable("reduceLocaldb") && curHeight-SafetyReduceHeight > height {
 			chain.deleteTx(newbatch, blockdetail.GetBlock())

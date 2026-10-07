@@ -1101,6 +1101,24 @@ func (q *QueueProtocol) GetParaTxByHeight(param *types.ReqParaTxByHeight) (*type
 	return nil, types.ErrTypeAsset
 }
 
+// GetParaTxIndex //通过区块高度和title获取平行链跨链交易索引
+func (q *QueueProtocol) GetParaTxIndex(param *types.ReqParaTxIndex) (*types.HeightParaIndex, error) {
+	if param == nil {
+		err := types.ErrInvalidParam
+		log.Error("GetParaTxIndex", "Error", err)
+		return nil, err
+	}
+	msg, err := q.send(blockchainKey, types.EventGetParaTxIndex, param)
+	if err != nil {
+		log.Error("GetParaTxIndex", "Error", err.Error())
+		return nil, err
+	}
+	if reply, ok := msg.GetData().(*types.HeightParaIndex); ok {
+		return reply, nil
+	}
+	return nil, types.ErrTypeAsset
+}
+
 // GetConfig 通过seq以及title获取对应平行连的交易
 func (q *QueueProtocol) GetConfig() *types.Chain33Config {
 	if q.client == nil {

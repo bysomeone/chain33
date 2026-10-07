@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package types;
+option  go_package = "github.com/33cn/chain33/types";
+
+// ParaTxIndexItem 区块内单笔平行链跨链交易的索引项
+message ParaTxIndexItem {
+    // 该交易在区块内该title全部平行链交易(过滤后)有序列表中的下标
+    uint32 baseIndex = 1;
+    // 交易的action类型(ParacrossAction.Ty), 消费方据此跳过非资产转移类交易
+    int32 ty = 2;
+    // 交易完整字节, 仅资产转移类交易(Ty为10000,10001或大于等于10005)记录
+    bytes tx = 3;
+}
+
+// HeightParaIndex 主链区块内某个平行链title的跨链交易索引
+// 用于跨链交易执行时避免读取历史区块体
+message HeightParaIndex {
+    int64 height = 1;
+    string title = 2;
+    // 区块hash, 消费方据此校验索引与请求的区块一致
+    bytes hash = 3;
+    // 过滤后平行链交易的总数, 即位图长度
+    uint32 baseHashCount = 4;
+    // 按交易在区块内的顺序排列
+    repeated ParaTxIndexItem items = 5;
+}
+
+// ReqParaTxIndex 按高度和title请求平行链跨链交易索引
+message ReqParaTxIndex {
+    int64 height = 1;
+    string title = 2;
+}

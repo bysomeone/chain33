@@ -378,6 +378,148 @@ func getParaTxByIndex(db dbm.DB, indexName string, prefix []byte, primaryKey []b
 }
 
 /*
+table  paratxindex
+data:  types.HeightParaIndex
+primary:heighttitle
+index: height,title
+
+和paratx表使用相同的主键, 但只由注册了ParaTxIndexBuilder的插件写入,
+未注册时该表始终为空
+*/
+var paratxIndexOpt = &table.Option{
+	Prefix:  "CHAIN-paratx-index",
+	Name:    "paratxindex",
+	Primary: "heighttitle",
+	Index:   []string{"height", "title"},
+}
+
+// ParaTxIndexRow table meta 结构
+type ParaTxIndexRow struct {
+	*types.HeightParaIndex
+}
+
+// NewParaTxIndexRow 新建一个meta 结构
+func NewParaTxIndexRow() *ParaTxIndexRow {
+	return &ParaTxIndexRow{HeightParaIndex: &types.HeightParaIndex{}}
+}
+
+// NewParaTxIndexTable 新建表
+func NewParaTxIndexTable(kvdb dbm.KV) *table.Table {
+	rowmeta := NewParaTxIndexRow()
+	table, err := table.NewTable(rowmeta, kvdb, paratxIndexOpt)
+	if err != nil {
+		panic(err)
+	}
+	return table
+}
+
+// CreateRow 新建数据行
+func (paratxIndex *ParaTxIndexRow) CreateRow() *table.Row {
+	return &table.Row{Data: &types.HeightParaIndex{}}
+}
+
+// SetPayload 设置数据
+func (paratxIndex *ParaTxIndexRow) SetPayload(data types.Message) error {
+	if heightParaIndex, ok := data.(*types.HeightParaIndex); ok {
+		paratxIndex.HeightParaIndex = heightParaIndex
+		return nil
+	}
+	return types.ErrTypeAsset
+}
+
+// Get 获取索引对应的key值
+func (paratxIndex *ParaTxIndexRow) Get(key string) ([]byte, error) {
+	if key == "heighttitle" {
+		return calcHeightTitleKey(paratxIndex.Height, paratxIndex.Title), nil
+	} else if key == "height" {
+		return calcHeightParaKey(paratxIndex.Height), nil
+	} else if key == "title" {
+		return []byte(paratxIndex.Title), nil
+	}
+	return nil, types.ErrNotFound
+}
+
+// buildParaTxIndex 构建区块的平行链跨链交易索引
+// 索引只用于加速跨链交易执行, 未注册builder时返回空,
+// 构建失败或者builder panic都不能影响区块本身的保存
+func buildParaTxIndex(cfg *types.Chain33Config, detail *types.BlockDetail) (indexes []*types.HeightParaIndex, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			indexes = nil
+			err = fmt.Errorf("para tx index builder panic: %v", r)
+		}
+	}()
+	return types.BuildParaTxIndex(cfg, detail)
+}
+
+// saveParaTxIndexForBlock 构建并保存区块的平行链跨链交易索引
+// 未注册builder时不会产生任何数据
+func saveParaTxIndexForBlock(cfg *types.Chain33Config, db dbm.DB, detail *types.BlockDetail) ([]*types.KeyValue, error) {
+	indexes, err := buildParaTxIndex(cfg, detail)
+	if err != nil || len(indexes) == 0 {
+		return nil, err
+	}
+	return saveParaTxIndexTable(db, indexes)
+}
+
+// saveParaTxIndexTable 保存平行链跨链交易索引
+func saveParaTxIndexTable(db dbm.DB, indexes []*types.HeightParaIndex) ([]*types.KeyValue, error) {
+	if len(indexes) == 0 {
+		return nil, nil
+	}
+	kvdb := dbm.NewKVDB(db)
+	table := NewParaTxIndexTable(kvdb)
+	for _, index := range indexes {
+		err := table.Replace(index)
+		if err != nil {
+			return nil, err
+		}
+	}
+	kvs, err := table.Save()
+	if err != nil {
+		return nil, err
+	}
+	return kvs, nil
+}
+
+// delParaTxIndexTable 删除本高度对应的所有平行链跨链交易索引
+func delParaTxIndexTable(db dbm.DB, height int64) ([]*types.KeyValue, error) {
+	kvdb := dbm.NewKVDB(db)
+	table := NewParaTxIndexTable(kvdb)
+	rows, _ := table.ListIndex("height", calcHeightParaKey(height), nil, 0, dbm.ListASC)
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	for _, row := range rows {
+		err := table.Del(row.Primary)
+		if err != nil {
+			return nil, err
+		}
+	}
+	kvs, err := table.Save()
+	if err != nil {
+		return nil, err
+	}
+	return kvs, nil
+}
+
+// getParaTxIndex 通过height和title获取平行链跨链交易索引
+func getParaTxIndex(db dbm.DB, height int64, title string) (*types.HeightParaIndex, error) {
+	kvdb := dbm.NewKVDB(db)
+	table := NewParaTxIndexTable(kvdb)
+
+	row, err := table.GetData(calcHeightTitleKey(height, title))
+	if err != nil {
+		return nil, err
+	}
+	index, ok := row.Data.(*types.HeightParaIndex)
+	if !ok {
+		return nil, types.ErrDecode
+	}
+	return index, nil
+}
+
+/*
 table  receipt
 data:  block receipt
 index: hash

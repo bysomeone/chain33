@@ -134,6 +134,8 @@ type QueueProtocolAPI interface {
 	LoadParaTxByTitle(param *types.ReqHeightByTitle) (*types.ReplyHeightByTitle, error)
 	// types.EventGetParaTxByTitleAndHeight
 	GetParaTxByHeight(param *types.ReqParaTxByHeight) (*types.ParaTxDetails, error)
+	// types.EventGetParaTxIndex
+	GetParaTxIndex(param *types.ReqParaTxIndex) (*types.HeightParaIndex, error)
 	// get chain config
 	GetConfig() *types.Chain33Config
 	// send delay tx
