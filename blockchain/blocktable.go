@@ -2,6 +2,7 @@ package blockchain
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	dbm "github.com/33cn/chain33/common/db"
 	"github.com/33cn/chain33/common/db/table"
@@ -452,10 +453,41 @@ func buildParaTxIndex(cfg *types.Chain33Config, detail *types.BlockDetail) (inde
 	return types.BuildParaTxIndex(cfg, detail)
 }
 
+// TEMPORARY PROBE, drop before the pull request.
+//
+// An empty index cannot be told apart from the outside: the builder may never have been
+// registered, it may be registered and return nothing for the block, or it may return
+// rows, so this counts the save path per outcome and logs the first samples of each.
+var probeIdxSaveAll, probeIdxSaveEmpty int64
+
+func probeParaTxIndexSave(detail *types.BlockDetail, indexCount int, err error) {
+	all := atomic.AddInt64(&probeIdxSaveAll, 1)
+	isEmpty := indexCount == 0 && err == nil
+	var empty int64
+	if isEmpty {
+		empty = atomic.AddInt64(&probeIdxSaveEmpty, 1)
+	}
+	if all > 20 && all%5000 != 0 && !(isEmpty && (empty <= 20 || empty%2000 == 0)) {
+		return
+	}
+	var height, txCount, receiptCount int64
+	if detail != nil && detail.Block != nil {
+		height = detail.Block.Height
+		txCount = int64(len(detail.Block.Txs))
+	}
+	if detail != nil {
+		receiptCount = int64(len(detail.Receipts))
+	}
+	storeLog.Info("paratxindex save probe", "n", all, "emptyN", empty, "height", height,
+		"txs", txCount, "receipts", receiptCount, "indexes", indexCount,
+		"builderRegistered", types.GetParaTxIndexBuilder() != nil, "err", err)
+}
+
 // saveParaTxIndexForBlock 构建并保存区块的平行链跨链交易索引
 // 未注册builder时不会产生任何数据
 func saveParaTxIndexForBlock(cfg *types.Chain33Config, db dbm.DB, detail *types.BlockDetail) ([]*types.KeyValue, error) {
 	indexes, err := buildParaTxIndex(cfg, detail)
+	probeParaTxIndexSave(detail, len(indexes), err) // TEMPORARY PROBE, drop before the pull request.
 	if err != nil || len(indexes) == 0 {
 		return nil, err
 	}
