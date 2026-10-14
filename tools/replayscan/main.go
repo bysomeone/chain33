@@ -498,6 +498,21 @@ func tokenScan(emit func(interface{}) error, tx *types.Transaction, height int64
 	return false, nil
 }
 
+// bodyRange bounds a walk to one table's rows, optionally starting at a height. Keys sort by
+// height, so a start boundary is a seek rather than a filter: scoping a run to the heights a
+// change can reach skips the store below it instead of walking past it.
+//
+// The prefix's upper bound has to be carried over. A start-only Range runs past the table into
+// every key that sorts after it -- a scoped scan then reads the whole database, which looks like
+// a scan that will not finish and silently walks rows the mode was never meant to see.
+func bodyRange(prefix string, fromHeight int64) *util.Range {
+	rng := util.BytesPrefix([]byte(prefix))
+	if fromHeight > 0 {
+		rng.Start = []byte(prefix + fmt.Sprintf("%012d", fromHeight))
+	}
+	return rng
+}
+
 // scan walks the block bodies in height order and reports the candidates the mode selects.
 func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut, fromHeight int64) {
 	// Pin the enabled set to bityuan's configuration; the registered default is 0 for every
@@ -530,12 +545,7 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut,
 		headerLen, keyOff = 0, len(chunkPrefix)
 	}
 
-	// Keys sort by height, so a start boundary is a seek rather than a filter: asking for the
-	// heights a change can reach skips the store below it instead of walking past it.
-	rng := util.BytesPrefix([]byte(prefix))
-	if fromHeight > 0 {
-		rng = &util.Range{Start: []byte(prefix + fmt.Sprintf("%012d", fromHeight))}
-	}
+	rng := bodyRange(prefix, fromHeight)
 	iter := db.NewIterator(rng, nil)
 	defer iter.Release()
 
@@ -571,8 +581,12 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut,
 		for i, tx := range body.Txs {
 			nTxs++
 			rcpt := int32(-1)
+			var logTys []int64
 			if i < len(body.Receipts) && body.Receipts[i] != nil {
 				rcpt = int32(body.Receipts[i].GetTy())
+				for _, lg := range body.Receipts[i].Logs {
+					logTys = append(logTys, int64(lg.Ty))
+				}
 			}
 			pushed := false
 
@@ -623,7 +637,7 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut,
 				// Both halves of the rollup evidence: the rollup dapp's own commits, and the
 				// paracross transactions that settle a round's cross-chain assets.
 				var err error
-				pushed, err = rollup.rollupTx(emit, tx, body.Height, i, rcpt)
+				pushed, err = rollup.rollupTx(emit, tx, body.Height, i, rcpt, logTys)
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "encode:", err)
 					os.Exit(1)

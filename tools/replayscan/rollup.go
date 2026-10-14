@@ -64,6 +64,7 @@ const (
 type rollupCP struct {
 	Title        string
 	Round        int64
+	BatchPresent bool
 	FragIndex    int64
 	TxListLen    int
 	TxListBytes  int
@@ -82,8 +83,17 @@ type rollupCommitHit struct {
 	Receipt int32  `json:"receipt"`
 	To      string `json:"to"`
 
+	// Group identity: a rollup round travels as a transaction group, whose members sit at
+	// consecutive indices in the block. GroupCount 0 means a standalone transaction.
+	TxHash        string  `json:"tx_hash"`
+	Header        string  `json:"group_header,omitempty"`
+	GroupCount    int32   `json:"group_count"`
+	ReceiptLogs   int     `json:"receipt_logs"`
+	ReceiptLogTys []int64 `json:"receipt_log_tys,omitempty"`
+
 	ChainTitle          string `json:"chain_title"`
 	CommitRound         int64  `json:"commit_round"`
+	BatchPresent        bool   `json:"batch_present"`
 	BlockFragIndex      int64  `json:"block_frag_index"`
 	TxListLen           int    `json:"tx_list_len"`
 	CrossTxCheckHash    string `json:"cross_tx_check_hash"`
@@ -102,11 +112,13 @@ type rollupCrossTxHit struct {
 	Receipt int32  `json:"receipt"`
 	To      string `json:"to"`
 
-	ChainTitle  string   `json:"chain_title"`
-	CommitRound int64    `json:"commit_round"`
-	IndexCount  int      `json:"index_count"`
-	TxHashes    []string `json:"tx_hashes,omitempty"`
-	Truncated   bool     `json:"hashes_truncated,omitempty"`
+	ReceiptLogs   int      `json:"receipt_logs"`
+	ReceiptLogTys []int64  `json:"receipt_log_tys,omitempty"`
+	ChainTitle    string   `json:"chain_title"`
+	CommitRound   int64    `json:"commit_round"`
+	IndexCount    int      `json:"index_count"`
+	TxHashes      []string `json:"tx_hashes,omitempty"`
+	Truncated     bool     `json:"hashes_truncated,omitempty"`
 }
 
 // rollupTitleStat aggregates one chain title. RoundMin/RoundMax stand in for a round set: a
@@ -168,7 +180,8 @@ func (c *rollupCollector) title(name string) *rollupTitleStat {
 
 // rollupTx folds one transaction into the collector and reports whether it was a hit. It is
 // called for every transaction in the window, so the execer is compared before any decoding.
-func (c *rollupCollector) rollupTx(emit func(interface{}) error, tx *types.Transaction, height int64, txIndex int, receipt int32) (bool, error) {
+func (c *rollupCollector) rollupTx(emit func(interface{}) error, tx *types.Transaction, height int64, txIndex int, receipt int32, logTys []int64) (bool, error) {
+	logs := len(logTys)
 	switch string(tx.GetExecer()) {
 	case rollupExecer:
 		cp, ok := rollupCheckPoint(tx.GetPayload())
@@ -202,9 +215,12 @@ func (c *rollupCollector) rollupTx(emit func(interface{}) error, tx *types.Trans
 
 		h := rollupCommitHit{
 			Kind: "commit", Height: height, TxIndex: txIndex, Execer: rollupExecer,
-			Receipt: receipt, To: tx.GetTo(),
-			ChainTitle: cp.Title, CommitRound: cp.Round, BlockFragIndex: cp.FragIndex,
-			TxListLen: cp.TxListLen, CrossTxCheckHash: cp.CheckHash,
+			Receipt: receipt, ReceiptLogs: logs, ReceiptLogTys: logTys, To: tx.GetTo(),
+			TxHash: hex.EncodeToString(tx.Hash()), Header: hex.EncodeToString(tx.GetHeader()),
+			GroupCount: tx.GetGroupCount(),
+			ChainTitle: cp.Title, CommitRound: cp.Round, BatchPresent: cp.BatchPresent,
+			BlockFragIndex: cp.FragIndex,
+			TxListLen:      cp.TxListLen, CrossTxCheckHash: cp.CheckHash,
 			CrossTxResults: cp.Results, CrossTxSyncedHeight: cp.SyncedHeight,
 			ValidatorPubs: cp.Validators,
 		}
@@ -240,7 +256,7 @@ func (c *rollupCollector) rollupTx(emit func(interface{}) error, tx *types.Trans
 
 		h := rollupCrossTxHit{
 			Kind: "crosstx", Height: height, TxIndex: txIndex, Execer: paracrossExecer,
-			Receipt: receipt, To: tx.GetTo(),
+			Receipt: receipt, ReceiptLogs: logs, ReceiptLogTys: logTys, To: tx.GetTo(),
 			ChainTitle: rc.Title, CommitRound: rc.Round,
 			IndexCount: len(rc.Hashes),
 		}
@@ -299,9 +315,11 @@ func rollupCheckPoint(payload []byte) (rollupCP, bool) {
 	cp.Validators = len(protoAllBytes(commit, cpValidatorPub))
 	batch, ok := protoBytes(commit, cpBatch)
 	if !ok {
-		// A commit with no batch still identifies the title and round.
+		// A commit with no batch still identifies the title and round. Whether the field was
+		// absent or just empty is reported rather than folded into a zero count.
 		return cp, cp.Title != "" || cp.Round != 0
 	}
+	cp.BatchPresent = true
 	cp.FragIndex, _ = protoInt(batch, batchFragIndex)
 	txList := protoAllBytes(batch, batchTxList)
 	cp.TxListLen = len(txList)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/33cn/chain33/types"
@@ -323,4 +324,30 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// The upper bound is what keeps a scoped walk inside its table. Without it the iterator keeps
+// going into every key that sorts after the prefix -- the failure mode that made a bounded scan
+// read the whole database.
+func TestBodyRangeKeepsTheTableBound(t *testing.T) {
+	full := bodyRange(bodyRowPrefix, 0)
+	if !bytes.Equal(full.Start, []byte(bodyRowPrefix)) {
+		t.Errorf("start = %q", full.Start)
+	}
+	if len(full.Limit) == 0 {
+		t.Fatal("no upper bound on an unscoped walk")
+	}
+
+	scoped := bodyRange(bodyRowPrefix, 25770000)
+	if string(scoped.Start) != bodyRowPrefix+"000025770000" {
+		t.Errorf("scoped start = %q", scoped.Start)
+	}
+	if !bytes.Equal(scoped.Limit, full.Limit) {
+		t.Errorf("scoped walk lost its upper bound: %q vs %q", scoped.Limit, full.Limit)
+	}
+	// A key from a later table must not be inside the range.
+	later := []byte("CHAIN-body-body-i-000000000001")
+	if bytes.Compare(later, scoped.Start) >= 0 && bytes.Compare(later, scoped.Limit) < 0 {
+		t.Errorf("%q still falls inside the scoped range", later)
+	}
 }

@@ -156,7 +156,7 @@ func TestRollupCollectorCounts(t *testing.T) {
 	emit := func(interface{}) error { return nil }
 
 	commit := mkTx(rollupExecer, rollupCommitPayload("user.p.superx.", 1, 0, nil, 1))
-	hit, err := c.rollupTx(emit, commit, 25770100, 0, 2)
+	hit, err := c.rollupTx(emit, commit, 25770100, 0, 2, []int64{2, 101, 102})
 	if err != nil || !hit {
 		t.Fatalf("commit not counted: hit=%v err=%v", hit, err)
 	}
@@ -170,7 +170,7 @@ func TestRollupCollectorCounts(t *testing.T) {
 	// A second commit whose round goes backwards is what a duplicate or a replayed commit looks
 	// like from outside.
 	commit2 := mkTx(rollupExecer, rollupCommitPayload("user.p.superx.", 1, 0, nil, 1))
-	if _, err = c.rollupTx(emit, commit2, 25770101, 1, 2); err != nil {
+	if _, err = c.rollupTx(emit, commit2, 25770101, 1, 2, []int64{2, 101, 102}); err != nil {
 		t.Fatal(err)
 	}
 	if t0 := c.byT["user.p.superx."]; t0.RoundGaps != 1 {
@@ -180,7 +180,7 @@ func TestRollupCollectorCounts(t *testing.T) {
 	rc := mkTx(paracrossExecer, paracrossRollupCrossTxPayload("user.p.superx.", 1, [][3]interface{}{
 		{int64(25770090), int32(0), bytes.Repeat([]byte{0xcd}, 32)},
 	}))
-	hit, err = c.rollupTx(emit, rc, 25770102, 2, 2)
+	hit, err = c.rollupTx(emit, rc, 25770102, 2, 2, []int64{2, 21})
 	if err != nil || !hit {
 		t.Fatalf("cross tx not counted: hit=%v err=%v", hit, err)
 	}
@@ -194,7 +194,7 @@ func TestRollupCollectorCounts(t *testing.T) {
 	// Anything else on the paracross execer is skipped, and counted so a zero result can be told
 	// apart from a scan that never reached the execer.
 	other := mkTx(paracrossExecer, pbBytes(paraActionCommit, []byte{}))
-	if hit, err = c.rollupTx(emit, other, 25770103, 3, 2); err != nil || hit {
+	if hit, err = c.rollupTx(emit, other, 25770103, 3, 2, []int64{2}); err != nil || hit {
 		t.Fatalf("other paracross tx counted: hit=%v err=%v", hit, err)
 	}
 	if c.sum.OtherParacross != 1 {
