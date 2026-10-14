@@ -138,7 +138,40 @@ go run ./tools/replayscan token /path/to/datadir/blockchain.db out.jsonl "CHAIN-
 
 # paracross transaction density per 100k heights (histogram, not hits)
 go run ./tools/replayscan para /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-"
+
+# rollup-mode evidence, from the height the rollup dapp is enabled at
+go run ./tools/replayscan rollup /path/to/datadir/blockchain.db out.jsonl "CHAIN-body-body-d-" 0 0 -from 25770000
 ```
+
+## The rollup filter
+
+`rollup` mode answers a question about a live chain rather than about a replay: **is any para
+chain running the rollup mode, and how much cross-chain asset settlement has gone through it?**
+
+A rollup-mode para chain puts two things on the main chain, and both are counted:
+
+| what | execer | shape | decoded |
+|---|---|---|---|
+| a commit round | `rollup` | `RollupAction.commit` = `CheckPoint{chainTitle, commitRound, batch}` | title, round, para tx count, cross-tx check hash and result bitmap, validator count |
+| the round's cross-chain settlements | `paracross` | `ParacrossAction.rollupCrossTx` (arm 15) = `RollupCrossTx{chainTitle, commitRound, txIndices}` | title, round, and the hash of every referenced transaction |
+
+The two arrive in the same transaction group when a round carries cross-chain transactions
+(`commit2MainChain`), and the group is stored in the block as its member transactions, so both
+members are visible to the walk. A commit alone means rollup mode is running without cross-chain
+assets; a `RollupCrossTx` means assets moved through it.
+
+The results are aggregated per chain title and written once at the end, after the per-hit lines:
+`rollup_commit_txs`, `rollup_cross_tx_txs`, `rollup_cross_tx_indices`, the height range, and a
+per-title breakdown with the receipt each transaction was recorded under. `round_min`/`round_max`
+bracket the rounds a title ever committed, and `non_advancing_rounds` counts commits whose round
+did not move forward — what a duplicated or replayed commit looks like from outside.
+
+**A zero result is only meaningful next to `other_paracross_txs_skipped`.** That counter proves the
+walk reached real paracross transactions in the window; without it, zero could just as well mean
+the range was wrong.
+
+`-from` starts the walk at a height. Keys sort by height, so the boundary is a seek, not a filter:
+scoping a run to the heights a fork can reach skips the store below it instead of walking past it.
 
 `para` mode exists because executing a paracross `Commit` transaction makes the node read the
 main-chain block named by `status.MainBlockHash`, and on a shard node that block body is not
