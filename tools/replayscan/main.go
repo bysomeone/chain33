@@ -499,7 +499,7 @@ func tokenScan(emit func(interface{}) error, tx *types.Transaction, height int64
 }
 
 // scan walks the block bodies in height order and reports the candidates the mode selects.
-func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut int64) {
+func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut, fromHeight int64) {
 	// Pin the enabled set to bityuan's configuration; the registered default is 0 for every
 	// driver, which would accept addresses this chain rejects at low heights.
 	address.Init(&address.Config{
@@ -530,12 +530,22 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut 
 		headerLen, keyOff = 0, len(chunkPrefix)
 	}
 
-	iter := db.NewIterator(util.BytesPrefix([]byte(prefix)), nil)
+	// Keys sort by height, so a start boundary is a seek rather than a filter: asking for the
+	// heights a change can reach skips the store below it instead of walking past it.
+	rng := util.BytesPrefix([]byte(prefix))
+	if fromHeight > 0 {
+		rng = &util.Range{Start: []byte(prefix + fmt.Sprintf("%012d", fromHeight))}
+	}
+	iter := db.NewIterator(rng, nil)
 	defer iter.Release()
 
 	var nRows, nTxs, nHits int64
 	var lastHeight int64
 	stats := map[string]int64{}
+	var rollup *rollupCollector
+	if mode == modeRollup {
+		rollup = newRollupCollector(stats)
+	}
 	totals := map[string]int64{}
 	paraBuckets := map[int64]map[string]int64{}
 	anchors := map[anchorKey]*anchorRow{}
@@ -609,6 +619,15 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut 
 					row.AnchorMax = anchor
 				}
 				pushed = true
+			case mode == modeRollup:
+				// Both halves of the rollup evidence: the rollup dapp's own commits, and the
+				// paracross transactions that settle a round's cross-chain assets.
+				var err error
+				pushed, err = rollup.rollupTx(emit, tx, body.Height, i, rcpt)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "encode:", err)
+					os.Exit(1)
+				}
 			case mode == modeSize:
 				// Nothing per transaction; modeSize is accounted per block, after this loop.
 			case mode == modeAddr:
@@ -723,6 +742,23 @@ func scan(dbPath, outPath, prefix, mode, src, tokenExecer string, limit, maxOut 
 		}
 	}
 
+	if mode == modeRollup {
+		if err := rollup.write(enc); err != nil {
+			fmt.Fprintln(os.Stderr, "encode:", err)
+			os.Exit(1)
+		}
+		// The line an operator reads first: zero commits means no chain ever ran rollup mode
+		// in the window scanned.
+		fmt.Fprintf(os.Stderr, "rollup: commits=%d crosstxs=%d indices=%d titles=%d heights=%d..%d\n",
+			rollup.sum.CommitTxs, rollup.sum.CrossTxTxs, rollup.sum.CrossTxIndices,
+			len(rollup.byT), rollup.sum.HeightMin, rollup.sum.HeightMax)
+		for _, t := range rollup.sum.Titles {
+			fmt.Fprintf(os.Stderr, "  title=%-28s commits=%d rounds=%d..%d crosstxs=%d indices=%d ok=%d fail=%d heights=%d..%d\n",
+				t.Title, t.Commits, t.RoundMin, t.RoundMax, t.CrossTxTxs, t.CrossTxIndices,
+				t.ExecOk, t.Failed, t.HeightMin, t.HeightMax)
+		}
+	}
+
 	if mode == modeAnchor {
 		rows := make([]*anchorRow, 0, len(anchors))
 		for _, r := range anchors {
@@ -778,6 +814,7 @@ const (
 	modePara   = "para"
 	modeAnchor = "anchor"
 	modeSize   = "size"
+	modeRollup = "rollup"
 )
 
 // sizeStat measures how much of the block-body store a paracross index would have to hold.
@@ -850,10 +887,14 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       replayscan para  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
 	fmt.Fprintln(os.Stderr, "       replayscan anchor <db> <out.jsonl> <body-prefix> [limit] [maxout]")
 	fmt.Fprintln(os.Stderr, "       replayscan size  <db> <out.jsonl> <body-prefix> [limit] [maxout]")
+	fmt.Fprintln(os.Stderr, "       replayscan rollup <db> <out.jsonl> <body-prefix> [limit] [maxout] [-from <height>]")
 	fmt.Fprintln(os.Stderr, "  para counts paracross transactions per height bucket (density histogram, not hits).")
 	fmt.Fprintln(os.Stderr, "  size measures how much of the body store a paracross index would have to hold.")
 	fmt.Fprintln(os.Stderr, "  anchor resolves each paracross Commit to the main-chain height it points at, and")
 	fmt.Fprintln(os.Stderr, "       whether its bitmap says that block will be read. Histogram, not per-tx output.")
+	fmt.Fprintln(os.Stderr, "  rollup reports the rollup dapp's commits and the paracross RollupCrossTx settlements,")
+	fmt.Fprintln(os.Stderr, "       which together say whether any para chain runs the rollup mode.")
+	fmt.Fprintln(os.Stderr, "  -from starts the walk at a height instead of the beginning of the store.")
 	fmt.Fprintln(os.Stderr, "  -execer defaults to the main chain's \"token\"; pass user.p.<title>.token to scan a para chain.")
 	fmt.Fprintln(os.Stderr, "  -src selects the store: chainbody (blockchain.db, default) or p2pstore.")
 	fmt.Fprintln(os.Stderr, "       A shard-enabled node prunes CHAIN-body to ~the last 10k heights, so for older")
@@ -873,6 +914,7 @@ func main() {
 	// -execer and -src are flags, so pull them out before the positional arguments are read.
 	tokenExecer := "token"
 	src := srcChainBody
+	var fromHeight int64
 	args := []string{}
 	for i := 1; i < len(os.Args); i++ {
 		if os.Args[i] == "-execer" {
@@ -891,6 +933,19 @@ func main() {
 			i++
 			continue
 		}
+		if os.Args[i] == "-from" {
+			if i+1 >= len(os.Args) {
+				usage()
+			}
+			v, err := strconv.ParseInt(os.Args[i+1], 10, 64)
+			if err != nil || v < 0 {
+				fmt.Fprintln(os.Stderr, "bad -from:", os.Args[i+1])
+				os.Exit(2)
+			}
+			fromHeight = v
+			i++
+			continue
+		}
 		args = append(args, os.Args[i])
 	}
 	os.Args = append([]string{os.Args[0]}, args...)
@@ -903,7 +958,8 @@ func main() {
 		usage()
 	}
 	mode := os.Args[1]
-	if mode != modeAddr && mode != modeToken && mode != modePara && mode != modeAnchor && mode != modeSize {
+	if mode != modeAddr && mode != modeToken && mode != modePara && mode != modeAnchor &&
+		mode != modeSize && mode != modeRollup {
 		usage()
 	}
 	var limit, maxOut int64
@@ -923,5 +979,5 @@ func main() {
 		}
 		maxOut = v
 	}
-	scan(os.Args[2], os.Args[3], os.Args[4], mode, src, tokenExecer, limit, maxOut)
+	scan(os.Args[2], os.Args[3], os.Args[4], mode, src, tokenExecer, limit, maxOut, fromHeight)
 }
