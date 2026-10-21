@@ -5,6 +5,7 @@
 package types
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -134,6 +135,20 @@ func TestRegisterSystemFork(t *testing.T) {
 	assert.True(t, f.HasFork("ForkBlockHash"))
 	assert.True(t, f.HasFork("ForkTransferExec"))
 	assert.Equal(t, int64(209186), f.GetFork("ForkBlockHash"))
+	// 创世动作高度限制默认按 0 生效
+	assert.True(t, f.HasFork(ForkGenesisOnlyAtHeightZero))
+	assert.Equal(t, int64(0), f.GetFork(ForkGenesisOnlyAtHeightZero))
+	assert.True(t, f.IsFork(0, ForkGenesisOnlyAtHeightZero))
+
+	// 配置为 -1 表示关闭: initForkConfig 在加载配置时把它转成 MaxHeight, 此时高度 0 与
+	// 正高度上都不生效。这里必须走 NewChain33Config, 直接 SetFork(MaxHeight) 会绕过该转换。
+	raw := ReadFile("testdata/chain33.toml")
+	off := strings.Replace(raw, ForkGenesisOnlyAtHeightZero+"=0", ForkGenesisOnlyAtHeightZero+"=-1", 1)
+	assert.NotEqual(t, raw, off, "测试配置必须包含该系统分叉才能验证 -1 的加载语义")
+	cfg := NewChain33Config(off)
+	assert.Equal(t, int64(MaxHeight), cfg.GetFork(ForkGenesisOnlyAtHeightZero))
+	assert.False(t, cfg.IsFork(0, ForkGenesisOnlyAtHeightZero))
+	assert.False(t, cfg.IsFork(1, ForkGenesisOnlyAtHeightZero))
 }
 
 func TestCheckKey(t *testing.T) {

@@ -21,6 +21,17 @@ const MaxHeight = 10000000000000000
 // 关闭时保持历史行为(这两条路径跳过校验)以保证旧区块可以原样重放。
 const ForkTxChainIDStrict = "ForkTxChainIDStrict"
 
+// ForkGenesisOnlyAtHeightZero 创世动作执行高度限制的分叉名, 配置在 [fork.system] 节。
+// 启用后, 框架在系统 dapp 派发 Exec_Genesis 之前统一拒绝 height != 0 的创世动作,
+// 返回 ErrReRunGenesis。coins/coinsx/token 的执行器各自已有该校验, ticket 曾经缺失；
+// 该分叉把这条件提升为框架不变量, 保护漏写校验的执行器。
+// 关闭该分叉(配置为 -1)时框架不做拦截, 以保持旧区块可以原样重放。
+// 注意: 配置为 0 表示对全部历史高度生效, 启用前必须确认链上不存在高度 != 0 成功执行的
+// 创世交易(否则重放会得到不同状态根); 另外若链的配置里根本没有 [fork] 段(例如
+// cmd/chain33/bityuan.toml), initForkConfig 会被跳过, 该分叉静默按注册默认值生效,
+// 不会有缺键/未知键的启动校验提示。
+const ForkGenesisOnlyAtHeightZero = "ForkGenesisOnlyAtHeightZero"
+
 // Forks fork分叉结构体
 type Forks struct {
 	forks map[string]int64
@@ -158,6 +169,10 @@ func (f *Forks) RegisterSystemFork() {
 	f.SetFork(ForkAccountBlacklist, MaxHeight)
 	f.SetFork(ForkAccountBlacklistV2, MaxHeight)
 	f.SetFork(ForkTxChainIDStrict, MaxHeight)
+	// 创世动作只允许在高度 0 执行。历史链上只有执行器自身漏写 height 校验时才可能
+	// 在高度 != 0 成功执行创世动作(属于缺陷), 因此该分叉默认按 0 生效;
+	// 若某条链确认历史区块中存在此类交易, 需在 [fork.system] 中显式配置为 -1 或未来高度。
+	f.SetFork(ForkGenesisOnlyAtHeightZero, 0)
 
 }
 

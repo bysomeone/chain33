@@ -1,5 +1,78 @@
 changelog
 
+## [1.72.7](https://github.com/33cn/chain33/compare/v1.72.6...v1.72.7) (2026-10-16)
+
+
+### Bug Fixes
+
+* **p2p:** keep the established dht identity instead of replacing it at runtime ([4200e0f](https://github.com/33cn/chain33/commit/4200e0fe91afe3903e47de1ed3e04300ef3518be))
+
+## [1.72.6](https://github.com/33cn/chain33/compare/v1.72.5...v1.72.6) (2026-10-16)
+
+
+### Bug Fixes
+
+* **dapp:** only allow genesis actions at height 0 ([c0735bd](https://github.com/33cn/chain33/commit/c0735bd7cfb8e27aa15bb47a447b664f7ba41770))
+
+## [1.72.5](https://github.com/33cn/chain33/compare/v1.72.4...v1.72.5) (2026-10-08)
+
+
+### Bug Fixes
+
+* **address:** reject the 25-byte checksum error below the base58 fork ([e310d62](https://github.com/33cn/chain33/commit/e310d629e3e668f071b3f9eba50a998dadca8842))
+
+## [1.72.4](https://github.com/33cn/chain33/compare/v1.72.3...v1.72.4) (2026-10-01)
+
+
+### Bug Fixes
+
+* **blockchain:** bound the rollback floor by the archiver's frontier ([4d4e8c1](https://github.com/33cn/chain33/commit/4d4e8c1a4e807ff3e7d5409d00218764cb9bebc8))
+* **blockchain:** refuse a rollback target below the archived block bodies ([969d118](https://github.com/33cn/chain33/commit/969d1189af70cbf37875499f24d31c42a5695c76))
+* **blockchain:** refuse targets the node could not start from ([ad4f533](https://github.com/33cn/chain33/commit/ad4f533092686faf1dc48a32a14699aa6e97d3fc))
+
+## [1.72.3](https://github.com/33cn/chain33/compare/v1.72.2...v1.72.3) (2026-09-30)
+
+
+### Bug Fixes
+
+* **account:** keep GenesisInit's amount bound where its callers already were ([ce95afe](https://github.com/33cn/chain33/commit/ce95afe12c81b4eea24e0f5657544f4cf61ce13f))
+* **address:** key the address cache by the enabled drivers ([9f230f1](https://github.com/33cn/chain33/commit/9f230f1e9ca946aa97954cc5b4843a2edf66cb90))
+* **address:** return the first driver's error deterministically ([eecef34](https://github.com/33cn/chain33/commit/eecef340d7fba123f7278f0559d3c11ebaf5ab0a))
+* **address:** tolerate the legacy checksum error below the base58 fork ([5663043](https://github.com/33cn/chain33/commit/566304371a51cf71434b27b43531333e37fedc41))
+* **executor:** apply the fork-gated address check at exec time ([a9a8c7a](https://github.com/33cn/chain33/commit/a9a8c7ad73648c5b8fa834ce2dc807a3904ca40f))
+
+
+### Performance Improvements
+
+* **address:** keep the driver walk and its cache entry allocation-free ([ef1a143](https://github.com/33cn/chain33/commit/ef1a143df2c2cd63454775b6a7bf6e11d168de44))
+
+
+### Reverts
+
+* **executor:** drop the exec-time address check ([5319122](https://github.com/33cn/chain33/commit/53191224e3ab6cbdab6e58df59d525f20299eaf0))
+
+## [1.72.2](https://github.com/33cn/chain33/compare/v1.72.1...v1.72.2) (2026-09-23)
+
+
+### Bug Fixes
+
+* **db:** cap the leveldb write buffer instead of deriving it from dbCache ([9fa5aa0](https://github.com/33cn/chain33/commit/9fa5aa01a3b34d8ef80a2d805652d7c59cc9bb4a))
+* **db:** resolve the per-level file count keys in Stats() ([65b08e2](https://github.com/33cn/chain33/commit/65b08e296d8f92bb1614369d33ad6f9de7bb9d28))
+* **deps:** bump goleveldb past the MANIFEST rotation table-file leak ([4b42656](https://github.com/33cn/chain33/commit/4b426566b8daf262c71094b6d924d79c45e0830b)), closes [#380](https://github.com/33cn/chain33/issues/380) [#1396](https://github.com/33cn/chain33/issues/1396)
+
+## [1.72.1](https://github.com/33cn/chain33/compare/v1.72.0...v1.72.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* accept a higher minor version in p2p verLimit ([bd667ed](https://github.com/33cn/chain33/commit/bd667edc3accaaf6235f0c10b0ac4e77af44e0bc))
+* assert the airdrop span reaches AirDropMaxIndex ([d2a16d3](https://github.com/33cn/chain33/commit/d2a16d33bf87b4917c8f8168f1fd8ed5261330e7))
+* give GG18 test nodes distinct wallet seeds ([b890d1d](https://github.com/33cn/chain33/commit/b890d1d3837aa6284e0d1b9e4b7340b12f81946a))
+* keep airdrop index inside the valid wallet range ([ec54763](https://github.com/33cn/chain33/commit/ec5476309f32c417dab534e693c6015167c5b253))
+* keep airdrop peer ids unique across processes ([53d304e](https://github.com/33cn/chain33/commit/53d304ea891f55c7882502e582f6304a7d16fe9b))
+* keep same-second airdrop indexes distinct and in range ([563e80d](https://github.com/33cn/chain33/commit/563e80d77da5823529e07d93b81f7cdb6f08c362))
+* reject unparsable versions in p2p verLimit ([8448762](https://github.com/33cn/chain33/commit/8448762414feef8e872c8f0c5cead6d6dee22846))
+
 # [1.72.0](https://github.com/33cn/chain33/compare/v1.71.0...v1.72.0) (2026-09-17)
 
 

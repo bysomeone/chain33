@@ -139,7 +139,7 @@ func initP2P(p *P2P) *P2P {
 		if p.p2pCfg.WaitPid { //p2p阻塞,直到创建钱包之后
 			p.taskGroup.Add(1)
 			p.genAirDropKey()
-		} else { //创建随机公私钥对,生成临时pid，待创建钱包之后，提换钱包生成的pid
+		} else { //先用随机身份启动: 身份一经发布就不再更换, 钱包就绪后只把它导入钱包备份
 			p.addrBook.Randkey()
 			p.taskGroup.Add(1)
 			go p.genAirDropKey() //非阻塞模式
@@ -494,10 +494,8 @@ func (p *P2P) doGenAirDropKey() bool {
 		}
 		break
 	}
-	//用助记词和随机索引创建空投地址
-	r := rand.New(rand.NewSource(types.Now().Unix()))
-	var minIndex int32 = 100000000
-	randIndex := minIndex + r.Int31n(minIndex)
+	//用助记词和随机索引创建空投地址。纳秒加 pid，避免同一秒启动的节点得到同一个索引。
+	randIndex := airDropIndex(types.Now().UnixNano() + int64(os.Getpid()))
 	reqIndex := &types.Int32{Data: randIndex}
 	msg, err := p.api.ExecWalletFunc("wallet", "NewAccountByIndex", reqIndex)
 	if err != nil {
@@ -543,9 +541,10 @@ func (p *P2P) doGenAirDropKey() bool {
 		}
 	}
 
-	if savePrivkey != "" && !p.p2pCfg.WaitPid { //如果是waitpid 则不生成dht node award,保证之后一个空投地址，即钱包创建的airdropaddr
-		//savePrivkey是随机私钥，兼容老版本，先对其进行导入钱包处理
-		//进行压缩处理
+	//addrbook 里已经有 dht 节点身份时, 把它导入钱包做备份(该私钥由助记词推不出来)。
+	//identitySavedInWallet: 私钥已经在钱包里(ErrPrivkeyExist)也算成功, 不必再试;
+	//名字冲突时才换一个随机名字重试; 其它错误记录日志后放弃, 不影响节点继续运行。
+	if savePrivkey != "" && !p.p2pCfg.WaitPid {
 		var parm types.ReqWalletImportPrivkey
 		parm.Privkey = savePrivkey
 		parm.Label = "dht node award"
@@ -555,18 +554,46 @@ func (p *P2P) doGenAirDropKey() bool {
 		}
 		for {
 			_, err = p.api.ExecWalletFunc("wallet", "WalletImportPrivkey", &parm)
+			if err == nil || err == types.ErrPrivkeyExist {
+				break
+			}
 			if err == types.ErrLabelHasUsed {
 				//切换随机lable
 				parm.Label = fmt.Sprintf("node award %d", rand.Int31n(1024000))
-				time.Sleep(time.Second)
 				continue
 			}
+			log.Error("genAirDropKey", "WalletImportPrivkey err", err)
 			break
 		}
 	}
 
+	// 节点身份一旦在 addrbook 里持久化, 就不再在运行期用钱包空投地址替换它:
+	// 此时 DHT host 已经用这个私钥对外发布了 peer id, 运行期更换会让所有按 peer id
+	// 配置了本节点的对端(peering 列表、TSS peers、白名单等)全部失效。
+	// v1.72.1 修好空投索引取值范围后(ec5476309 等), 这条替换路径开始真的执行, 于是
+	// 暴露成“钱包就绪后约 1 秒 peer id 变化”的确定性回归——一个新节点只在第一次
+	// 钱包就绪时换一次(空投索引 sticky), plugin ci_rgbx 的 TSS peers 即被此打断。
+	// 注意 waitPid=false(默认)时 initP2P 已经 Randkey() 落盘了一把身份, 所以这类节点
+	// 读到非空身份就直接返回, 不会采用钱包空投地址; 只有 addrbook 里没有身份、且在
+	// DHT host 启动之前就拿到钱包空投地址的节点(waitPid=true)才会用它作为节点身份。
+	if savePrivkey != "" {
+		log.Info("genAirDropKey", "keep the established dht identity, skip the airdrop key replacement")
+		return false
+	}
+
 	p.addrBook.saveKey(walletPrivkey, walletPubkey)
 	return true
+}
+
+// airDropSpan 是空投索引闭区间的长度。少 1 会让 AirDropMaxIndex 取不到。
+func airDropSpan() int32 {
+	return int32(types.AirDropMaxIndex-types.AirDropMinIndex) + 1
+}
+
+// airDropIndex 在空投合法闭区间内取索引。
+func airDropIndex(seed int64) int32 {
+	r := rand.New(rand.NewSource(seed))
+	return int32(types.AirDropMinIndex) + r.Int31n(airDropSpan())
 }
 
 func newDB(name, backend, dir string, cache int32) dbm.DB {
